@@ -39,8 +39,15 @@ function localApi(): Plugin {
       for (const [route, handler] of Object.entries(handlers)) {
         server.middlewares.use(route, async (req: any, res: any, next: any) => {
           try {
+            const headers = new Headers()
+            for (const [key, value] of Object.entries(req.headers ?? {})) {
+              if (typeof value === 'string') headers.set(key, value)
+              else if (Array.isArray(value)) headers.set(key, value.join(', '))
+            }
+
             const request = new Request(`http://localhost:5173${req.url ?? ''}`, {
               method: req.method ?? 'GET',
+              headers,
             })
             const response = await handler(request)
             await sendResponse(response, res, route === '/api/stream')
