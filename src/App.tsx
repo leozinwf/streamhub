@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff } from 'lucide-react'
+import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff, Menu, Home, LayoutGrid, Radio, RefreshCw } from 'lucide-react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import { parseM3U } from './lib/m3u'
@@ -21,9 +21,14 @@ function normalizeServer(value: string) {
   return raw
 }
 
+function proxyStreamUrl(url: string) {
+  return `/api/stream?url=${encodeURIComponent(url)}`
+}
+
 function Player({ channel }: { channel: Channel | null }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [error, setError] = useState<string | null>(null)
+  const [retryKey, setRetryKey] = useState(0)
 
   useEffect(() => {
     const video = videoRef.current
@@ -32,27 +37,41 @@ function Player({ channel }: { channel: Channel | null }) {
     setError(null)
     let hls: Hls | null = null
     let tsPlayer: ReturnType<typeof mpegts.createPlayer> | null = null
+    const source = proxyStreamUrl(channel.url)
 
     if (isMpegTs(channel.url) && mpegts.getFeatureList().mseLivePlayback) {
-      tsPlayer = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: channel.url })
+      tsPlayer = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: source })
       tsPlayer.attachMediaElement(video)
       tsPlayer.on(mpegts.Events.ERROR, () => {
-        setError('Não foi possível reproduzir o MPEG-TS. Verifique CORS, codec e disponibilidade da fonte.')
+        setError('Não foi possível reproduzir este canal. A fonte pode estar indisponível ou exigir um formato diferente.')
       })
       tsPlayer.load()
       void tsPlayer.play().catch(() => undefined)
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = channel.url
-      video.addEventListener('error', () => setError('Não foi possível reproduzir este stream. Verifique a disponibilidade da fonte.'))
-      void video.play().catch(() => undefined)
     } else if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true, lowLatencyMode: true })
-      hls.loadSource(channel.url)
+      hls = new Hls({ enableWorker: true, lowLatencyMode: true, backBufferLength: 30 })
+      hls.loadSource(source)
       hls.attachMedia(video)
       hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => undefined))
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) setError('Não foi possível reproduzir este HLS. Verifique CORS, HTTPS e disponibilidade da fonte.')
+        if (!data.fatal) return
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          setError('Falha de rede ao carregar o canal. Tente novamente.')
+          hls?.startLoad()
+        } else {
+          setError('Não foi possível reproduzir este HLS. Verifique a disponibilidade da fonte.')
+        }
       })
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = source
+      const onError = () => setError('Não foi possível reproduzir este stream. Verifique a disponibilidade da fonte.')
+      video.addEventListener('error', onError)
+      void video.play().catch(() => undefined)
+      return () => {
+        video.removeEventListener('error', onError)
+        video.pause()
+        video.removeAttribute('src')
+        video.load()
+      }
     } else {
       setError('Este navegador não oferece suporte ao formato deste stream.')
     }
@@ -64,15 +83,31 @@ function Player({ channel }: { channel: Channel | null }) {
       video.removeAttribute('src')
       video.load()
     }
-  }, [channel])
+  }, [channel, retryKey])
 
-  if (!channel) return <div className="empty-player"><Play size={30} /><span>Selecione um canal para começar</span></div>
+  if (!channel) {
+    return (
+      <div className="empty-player">
+        <div className="empty-player-icon"><Play size={28} /></div>
+        <strong>Selecione um canal para assistir</strong>
+        <span>Escolha um canal da sua biblioteca abaixo</span>
+      </div>
+    )
+  }
 
   return (
     <div className="video-wrapper">
       <video ref={videoRef} controls playsInline />
-      <div className="now-playing"><span>{channel.name}</span><small>{isMpegTs(channel.url) ? 'MPEG-TS' : 'HLS'}</small></div>
-      {error && <div className="video-error">{error}</div>}
+      <div className="now-playing">
+        <div><strong>{channel.name}</strong><span>{channel.group}</span></div>
+        <small>{isMpegTs(channel.url) ? 'MPEG-TS' : 'HLS'}</small>
+      </div>
+      {error && (
+        <div className="video-error">
+          <span>{error}</span>
+          <button onClick={() => setRetryKey((value) => value + 1)}><RefreshCw size={14} /> Tentar novamente</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -91,13 +126,14 @@ export default function App() {
   const [showPassword, setShowPassword] = useState(false)
   const [urlLoading, setUrlLoading] = useState(false)
   const [urlError, setUrlError] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     void loadPlaylist().then((stored) => { setPlaylist(stored); setReady(true) })
   }, [])
 
-  const groups = useMemo(() => playlist ? ['Todos', ...Array.from(new Set(playlist.channels.map((c) => c.group))).sort()] : [], [playlist])
+  const groups = useMemo(() => playlist ? ['Todos', ...Array.from(new Set(playlist.channels.map((c) => c.group).filter(Boolean))).sort((a, b) => a.localeCompare(b))] : [], [playlist])
   const channels = useMemo(() => playlist?.channels.filter((channel) => {
     const groupMatch = selectedGroup === 'Todos' || channel.group === selectedGroup
     return groupMatch && channel.name.toLowerCase().includes(query.toLowerCase())
@@ -121,12 +157,7 @@ export default function App() {
   async function importUrl() {
     const url = playlistUrl.trim()
     if (!url) return
-    try {
-      new URL(url)
-    } catch {
-      setUrlError('Informe uma URL válida.')
-      return
-    }
+    try { new URL(url) } catch { setUrlError('Informe uma URL válida.'); return }
 
     setUrlLoading(true)
     setUrlError(null)
@@ -134,14 +165,11 @@ export default function App() {
       const response = await fetch(`/api/playlist?url=${encodeURIComponent(url)}`)
       if (!response.ok) throw new Error(await response.text())
       const content = await response.text()
-      const name = new URL(url).hostname || 'Playlist por URL'
-      await importContent(name, content)
+      await importContent(new URL(url).hostname || 'Playlist por URL', content)
       setPlaylistUrl('')
-    } catch {
-      setUrlError('Não foi possível importar esta URL. Verifique o endereço e se o servidor da playlist está disponível.')
-    } finally {
-      setUrlLoading(false)
-    }
+    } catch (error) {
+      setUrlError(error instanceof Error ? error.message : 'Não foi possível importar esta URL.')
+    } finally { setUrlLoading(false) }
   }
 
   async function connectXtream() {
@@ -166,24 +194,40 @@ export default function App() {
         throw new Error('A conta IPTV não está autorizada.')
       }
 
-      const liveResponse = await fetch(`${base}&action=get_live_streams`)
+      const [categoriesResponse, liveResponse] = await Promise.all([
+        fetch(`${base}&action=get_live_categories`),
+        fetch(`${base}&action=get_live_streams`),
+      ])
+
       if (!liveResponse.ok) throw new Error('Não foi possível carregar os canais.')
+
+      const categories = categoriesResponse.ok
+        ? await categoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }>
+        : []
+      const categoryMap = new Map(categories.map((category) => [String(category.category_id), category.category_name || 'Outros']))
+
       const liveStreams = await liveResponse.json() as Array<{
         stream_id?: number | string
         name?: string
+        category_id?: number | string
         category_name?: string
         stream_icon?: string
+        container_extension?: string
       }>
 
       const channels: Channel[] = liveStreams
         .filter((stream) => stream.stream_id != null && stream.name)
-        .map((stream, index) => ({
-          id: `xtream-${stream.stream_id}-${index}`,
-          name: stream.name || 'Canal sem nome',
-          url: `${normalizedServer}/live/${encodeURIComponent(username.trim())}/${encodeURIComponent(password)}/${stream.stream_id}.m3u8`,
-          group: stream.category_name || 'TV ao vivo',
-          logo: stream.stream_icon || undefined,
-        }))
+        .map((stream, index) => {
+          const extension = String(stream.container_extension || 'm3u8').toLowerCase().replace(/^\./, '')
+          const safeExtension = extension === 'ts' || extension === 'm3u8' ? extension : 'm3u8'
+          return {
+            id: `xtream-${stream.stream_id}-${index}`,
+            name: stream.name || 'Canal sem nome',
+            url: `${normalizedServer}/live/${encodeURIComponent(username.trim())}/${encodeURIComponent(password)}/${stream.stream_id}.${safeExtension}`,
+            group: categoryMap.get(String(stream.category_id)) || stream.category_name || 'Outros',
+            logo: stream.stream_icon || undefined,
+          }
+        })
 
       if (!channels.length) throw new Error('A conta foi conectada, mas nenhum canal ao vivo foi encontrado.')
 
@@ -194,9 +238,14 @@ export default function App() {
       setSelectedChannel(null)
     } catch (error) {
       setUrlError(error instanceof Error ? error.message : 'Não foi possível conectar ao serviço IPTV.')
-    } finally {
-      setUrlLoading(false)
-    }
+    } finally { setUrlLoading(false) }
+  }
+
+  function selectGroup(group: string) {
+    setSelectedGroup(group)
+    setSelectedChannel(null)
+    setSidebarOpen(false)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   function reset() {
@@ -244,7 +293,7 @@ export default function App() {
         )}
 
         {urlError && <div className="url-error">{urlError}</div>}
-        <div className="privacy-note">As credenciais não são enviadas para um banco do StreamHub. A conexão é feita sob demanda e a playlist fica armazenada localmente neste navegador.</div>
+        <div className="privacy-note">A conexão é feita sob demanda. Os dados não são enviados para um banco do StreamHub.</div>
       </section>
     </main>
   )
@@ -252,22 +301,57 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand"><Tv size={20} /> StreamHub</div>
-        <div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canal..." /></div>
+        <button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir categorias"><Menu size={21} /></button>
+        <div className="brand"><Tv size={21} /> <span>StreamHub</span></div>
+        <div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" /></div>
         <button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button>
         <button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button>
         <input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} />
       </header>
+
       <div className="layout">
-        <aside className="sidebar">
-          <div className="playlist-title">{playlist.name}<span>{playlist.channels.length} canais</span></div>
-          <nav>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => setSelectedGroup(group)}>{group === 'Todos' ? <Tv size={16} /> : <Star size={16} />}<span>{group}</span></button>)}</nav>
+        <aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
+          <div className="playlist-title"><strong>{playlist.name}</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais</span></div>
+          <nav>
+            <button className={selectedGroup === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Todos')}><Home size={18} /><span>Início</span></button>
+            <button className={selectedGroup === 'Favoritos' ? 'nav-item active' : 'nav-item'}><Star size={18} /><span>Favoritos</span></button>
+            <div className="nav-divider" />
+            <div className="nav-heading">CATEGORIAS</div>
+            {groups.filter((group) => group !== 'Todos').map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup(group)}><Radio size={16} /><span>{group}</span></button>)}
+          </nav>
         </aside>
+        {sidebarOpen && <button className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-label="Fechar menu" />}
+
         <main className="content">
-          <section className="player-card"><div className="player-screen"><Player channel={selectedChannel} /></div></section>
+          <section className="watch-area">
+            <div className="player-card"><div className="player-screen"><Player channel={selectedChannel} /></div></div>
+            {selectedChannel && (
+              <div className="video-meta">
+                <div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" /> : <Tv size={25} />}</div>
+                <div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div>
+              </div>
+            )}
+          </section>
+
+          <div className="category-strip">
+            <button className={selectedGroup === 'Todos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Todos')}><LayoutGrid size={15} /> Todos</button>
+            {groups.filter((group) => group !== 'Todos').map((group) => <button key={group} className={selectedGroup === group ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup(group)}>{group}</button>)}
+          </div>
+
           <section className="channels-section">
-            <div className="section-heading"><div><span className="eyebrow">BIBLIOTECA</span><h2>{selectedGroup}</h2></div><span className="count">{channels.length} canais</span></div>
-            <div className="channel-grid">{channels.map((channel) => <button className="channel-card" key={channel.id} onClick={() => setSelectedChannel(channel)}><div className="channel-logo">{channel.logo ? <img src={channel.logo} alt="" /> : <Tv size={23} />}</div><div className="channel-info"><strong>{channel.name}</strong><span>{channel.group}</span></div></button>)}</div>
+            <div className="section-heading"><div><span className="eyebrow">BIBLIOTECA</span><h2>{selectedGroup}</h2></div><span className="count">{channels.length.toLocaleString('pt-BR')} canais</span></div>
+            <div className="channel-grid">
+              {channels.map((channel) => (
+                <button className={selectedChannel?.id === channel.id ? 'channel-card selected' : 'channel-card'} key={channel.id} onClick={() => { setSelectedChannel(channel); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>
+                  <div className="channel-thumb">
+                    {channel.logo ? <img src={channel.logo} alt="" loading="lazy" /> : <Tv size={34} />}
+                    <span className="live-badge">AO VIVO</span>
+                    <span className="thumb-play"><Play size={18} fill="currentColor" /></span>
+                  </div>
+                  <div className="channel-info"><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" loading="lazy" /> : <Tv size={18} />}</div><div><strong>{channel.name}</strong><span>{channel.group}</span></div></div>
+                </button>
+              ))}
+            </div>
             {!channels.length && <div className="empty-list">Nenhum canal corresponde à sua busca.</div>}
           </section>
         </main>
