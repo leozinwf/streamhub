@@ -18,19 +18,18 @@ function Player({ channel }: { channel: Channel | null }) {
     if (!video || !channel) return
 
     setError(null)
-    const url = channel.url
     let hls: Hls | null = null
 
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = url
+      video.src = channel.url
       void video.play().catch(() => undefined)
     } else if (Hls.isSupported()) {
       hls = new Hls({ enableWorker: true })
-      hls.loadSource(url)
+      hls.loadSource(channel.url)
       hls.attachMedia(video)
       hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => undefined))
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) setError('Não foi possível reproduzir este stream no navegador.')
+        if (data.fatal) setError('Não foi possível reproduzir este stream no navegador. Verifique CORS e o suporte do formato.')
       })
     } else {
       setError('Este navegador não oferece suporte a HLS.')
@@ -44,14 +43,12 @@ function Player({ channel }: { channel: Channel | null }) {
     }
   }, [channel])
 
-  if (!channel) {
-    return <div className="empty-player"><Play size={30} /><span>Selecione um canal para começar</span></div>
-  }
+  if (!channel) return <div className="empty-player"><Play size={30} /><span>Selecione um canal para começar</span></div>
 
   return (
     <div className="video-wrapper">
       <video ref={videoRef} controls playsInline />
-      <div className="video-title"><strong>{channel.name}</strong>{error && <span>{error}</span>}</div>
+      {error && <div className="video-error">{error}</div>}
     </div>
   )
 }
