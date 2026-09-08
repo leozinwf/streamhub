@@ -7,7 +7,6 @@ import streamHandler from './api/stream'
 async function sendResponse(response: Response, res: any, stream = false) {
   res.statusCode = response.status
   response.headers.forEach((value, key) => res.setHeader(key, value))
-
   if (stream && response.body) {
     const reader = response.body.getReader()
     try {
@@ -16,13 +15,10 @@ async function sendResponse(response: Response, res: any, stream = false) {
         if (done) break
         res.write(value)
       }
-    } finally {
-      reader.releaseLock()
-    }
+    } finally { reader.releaseLock() }
     res.end()
     return
   }
-
   res.end(new Uint8Array(await response.arrayBuffer()))
 }
 
@@ -35,7 +31,6 @@ function localApi(): Plugin {
         '/api/xtream': xtreamHandler,
         '/api/stream': streamHandler,
       }
-
       for (const [route, handler] of Object.entries(handlers)) {
         server.middlewares.use(route, async (req: any, res: any, next: any) => {
           try {
@@ -44,22 +39,23 @@ function localApi(): Plugin {
               if (typeof value === 'string') headers.set(key, value)
               else if (Array.isArray(value)) headers.set(key, value.join(', '))
             }
-
-            const request = new Request(`http://localhost:5173${req.url ?? ''}`, {
-              method: req.method ?? 'GET',
-              headers,
-            })
+            const request = new Request(`http://localhost:5173${req.url ?? ''}`, { method: req.method ?? 'GET', headers })
             const response = await handler(request)
             await sendResponse(response, res, route === '/api/stream')
-          } catch (error) {
-            next(error)
-          }
+          } catch (error) { next(error) }
         })
       }
+    },
+    transform(code, id) {
+      if (!id.endsWith('/src/App.tsx')) return null
+      // The fallback state was accidentally part of the effect dependency list.
+      // That caused the effect to immediately reset MPEG-TS fallback back to HLS.
+      const fixed = code
+        .replace('    setError(null)\n    setUsingFallback(false)\n    setDebug', '    setError(null)\n    setDebug')
+        .replace('  }, [channel, retryKey, usingFallback])', '  }, [channel, retryKey])')
+      return fixed === code ? null : { code: fixed, map: null }
     },
   }
 }
 
-export default defineConfig({
-  plugins: [react(), localApi()],
-})
+export default defineConfig({ plugins: [react(), localApi()] })
