@@ -276,7 +276,7 @@ export default function Player({ channel }: Props) {
     }
   }, [channel, activeUrl, retryKey, usingFallback])
 
-  const togglePlay = () => { const video = videoRef.current; if (!video) return; if (video.paused) safePlay(video) ; else video.pause() }
+  const togglePlay = () => { const video = videoRef.current; if (!video) return; if (video.paused) safePlay(video); else video.pause() }
   const toggleMute = () => { const video = videoRef.current; if (!video) return; video.muted = !video.muted }
   const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false }
   const seekBy = (delta: number) => { const video = videoRef.current; if (!video || !Number.isFinite(video.duration)) return; video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + delta)) }
@@ -290,8 +290,11 @@ export default function Player({ channel }: Props) {
 
   if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
 
-  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
-    <video ref={videoRef} controls={false} playsInline preload="auto" onClick={handleVideoClick} />
+  const fullscreenRootStyle = isFullscreen ? { width: '100vw', height: '100vh', aspectRatio: 'auto' as const, maxWidth: '100vw', maxHeight: '100vh' } : undefined
+  const fullscreenVideoStyle = isFullscreen ? { width: '100%', height: '100%', objectFit: 'contain' as const, maxWidth: '100%', maxHeight: '100%' } : undefined
+
+  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} style={fullscreenRootStyle} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
+    <video ref={videoRef} controls={false} playsInline preload="auto" style={fullscreenVideoStyle} onClick={handleVideoClick} />
     {!isPlaying && !error && <div className="player-center-play" onClick={handleVideoClick}><Play size={28} fill="currentColor" /></div>}
     <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
     {error && <div className="video-error"><span>{error}</span><button onClick={retry}><RefreshCw size={14} /> Tentar novamente</button></div>}
