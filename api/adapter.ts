@@ -1,10 +1,9 @@
 type WebHandler = (request: Request) => Promise<Response>
 
-export function adaptHandler(handle: WebHandler) {
-  return async (incoming: Request | any, outgoing?: any): Promise<Response> => {
-    if (!outgoing && incoming instanceof Request) return handle(incoming)
-
-    const protocol = incoming.headers?.['x-forwarded-proto'] || 'https'
+export async function handleNodeRequest(incoming: any, outgoing: any, handle: WebHandler): Promise<void> {
+  try {
+    const forwardedProtocol = incoming.headers?.['x-forwarded-proto']
+    const protocol = Array.isArray(forwardedProtocol) ? forwardedProtocol[0] : forwardedProtocol || 'https'
     const host = incoming.headers?.host || 'localhost'
     const headers = new Headers()
     for (const [key, value] of Object.entries(incoming.headers || {})) {
@@ -29,6 +28,10 @@ export function adaptHandler(handle: WebHandler) {
       } finally { reader.releaseLock() }
     }
     outgoing.end()
-    return response
+  } catch (error) {
+    console.error('StreamHub API handler failed', error)
+    if (!outgoing.headersSent) outgoing.setHeader('Content-Type', 'application/json; charset=utf-8')
+    outgoing.statusCode = 500
+    outgoing.end(JSON.stringify({ error: 'A função da API não conseguiu processar a solicitação.' }))
   }
 }

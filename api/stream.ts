@@ -1,3 +1,5 @@
+import { handleNodeRequest } from './adapter.js'
+
 const TIMEOUT_MS = 30000
 const MAX_MANIFEST_BYTES = 5 * 1024 * 1024
 
@@ -48,7 +50,7 @@ function responseHeaders(source: Headers) {
   return headers
 }
 
-async function handle(req: Request): Promise<Response> {
+export async function handleStream(req: Request): Promise<Response> {
   if (req.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
   const targetValue = new URL(req.url).searchParams.get('url')?.trim()
   if (!targetValue || !isAllowedUrl(targetValue)) return new Response('URL inválida ou destino não permitido.', { status: 400 })
@@ -105,5 +107,6 @@ async function handle(req: Request): Promise<Response> {
   }
 }
 
-export default adaptHandler(handle)
-import { adaptHandler } from './adapter'
+export default async function handler(req: any, res: any) {
+  await handleNodeRequest(req, res, handleStream)
+}

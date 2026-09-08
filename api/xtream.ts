@@ -1,3 +1,5 @@
+import { handleNodeRequest } from './adapter.js'
+
 const TIMEOUT_MS = 15000
 
 function normalizeServer(value: string) {
@@ -19,7 +21,7 @@ function text(value: string | null) {
   return value?.trim() ?? ''
 }
 
-async function handle(req: Request): Promise<Response> {
+export async function handleXtream(req: Request): Promise<Response> {
   if (req.method !== 'GET') {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
   }
@@ -72,5 +74,6 @@ async function handle(req: Request): Promise<Response> {
   }
 }
 
-export default adaptHandler(handle)
-import { adaptHandler } from './adapter'
+export default async function handler(req: any, res: any) {
+  await handleNodeRequest(req, res, handleXtream)
+}

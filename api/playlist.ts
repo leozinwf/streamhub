@@ -1,3 +1,5 @@
+import { handleNodeRequest } from './adapter.js'
+
 const MAX_PLAYLIST_BYTES = 15 * 1024 * 1024
 const TIMEOUT_MS = 15000
 
@@ -16,7 +18,7 @@ function isPublicHttpUrl(value: string) {
   }
 }
 
-async function handle(req: Request): Promise<Response> {
+export async function handlePlaylist(req: Request): Promise<Response> {
   if (req.method !== 'GET') {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
   }
@@ -68,5 +70,6 @@ async function handle(req: Request): Promise<Response> {
   }
 }
 
-export default adaptHandler(handle)
-import { adaptHandler } from './adapter'
+export default async function handler(req: any, res: any) {
+  await handleNodeRequest(req, res, handlePlaylist)
+}

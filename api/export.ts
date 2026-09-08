@@ -1,3 +1,5 @@
+import { handleNodeRequest } from './adapter.js'
+
 const TIMEOUT_MS = 60000
 
 function normalizeServer(value: string) {
@@ -12,7 +14,7 @@ function normalizeServer(value: string) {
   } catch { return null }
 }
 
-async function handle(req: Request): Promise<Response> {
+export async function handleExport(req: Request): Promise<Response> {
   if (req.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
   const params = new URL(req.url).searchParams
   const server = normalizeServer(params.get('server') || '')
@@ -39,5 +41,6 @@ async function handle(req: Request): Promise<Response> {
   finally { clearTimeout(timeout) }
 }
 
-export default adaptHandler(handle)
-import { adaptHandler } from './adapter'
+export default async function handler(req: any, res: any) {
+  await handleNodeRequest(req, res, handleExport)
+}

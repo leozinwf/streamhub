@@ -1,9 +1,9 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import playlistHandler from './api/playlist'
-import xtreamHandler from './api/xtream'
-import streamHandler from './api/stream'
-import exportHandler from './api/export'
+import { handlePlaylist as playlistHandler } from './api/playlist'
+import { handleXtream as xtreamHandler } from './api/xtream'
+import { handleStream as streamHandler } from './api/stream'
+import { handleExport as exportHandler } from './api/export'
 
 async function sendResponse(response: Response, res: any, stream = false) {
   res.statusCode = response.status
