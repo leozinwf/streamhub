@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff, Menu, Home, LayoutGrid, Radio, RefreshCw, Clock3, Trash2 } from 'lucide-react'
+import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff, Menu, Home, Radio, RefreshCw, Clock3, Trash2 } from 'lucide-react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import { parseM3U } from './lib/m3u'
@@ -7,6 +7,7 @@ import { clearPlaylist, loadPlaylist, savePlaylist } from './lib/storage'
 import type { Channel, Playlist } from './types'
 
 const RECENT_STORAGE_KEY = 'streamhub-recent-channels'
+const FAVORITES_STORAGE_KEY = 'streamhub-favorite-channels'
 const MAX_RECENT_CHANNELS = 20
 
 function createPlaylist(name: string, channels: Channel[]): Playlist {
@@ -28,75 +29,188 @@ function proxyStreamUrl(url: string) {
   return `/api/stream?url=${encodeURIComponent(url)}`
 }
 
-function readRecentChannels(): Channel[] {
+function readStoredChannels(key: string, limit?: number): Channel[] {
   try {
-    const raw = localStorage.getItem(RECENT_STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return []
     const parsed = JSON.parse(raw) as Channel[]
-    return Array.isArray(parsed) ? parsed.slice(0, MAX_RECENT_CHANNELS) : []
-  } catch {
-    return []
-  }
+    if (!Array.isArray(parsed)) return []
+    return limit ? parsed.slice(0, limit) : parsed
+  } catch { return [] }
 }
 
-function writeRecentChannels(channels: Channel[]) {
-  try { localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(channels.slice(0, MAX_RECENT_CHANNELS))) } catch { /* ignore storage errors */ }
+function writeStoredChannels(key: string, channels: Channel[], limit?: number) {
+  try { localStorage.setItem(key, JSON.stringify(limit ? channels.slice(0, limit) : channels)) } catch { /* ignore storage errors */ }
+}
+
+function xtreamTsFallback(url: string) {
+  if (!/\/live\//i.test(url) || !/\.m3u8(?:$|\?)/i.test(url)) return null
+  return url.replace(/\.m3u8(?=$|\?)/i, '.ts')
 }
 
 function Player({ channel }: { channel: Channel | null }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
+  const [usingFallback, setUsingFallback] = useState(false)
 
   useEffect(() => {
     const video = videoRef.current
     if (!video || !channel) return
 
     setError(null)
+    setUsingFallback(false)
     let hls: Hls | null = null
     let tsPlayer: ReturnType<typeof mpegts.createPlayer> | null = null
-    const source = proxyStreamUrl(channel.url)
+    let mediaRecoveryAttempts = 0
+    let networkRecoveryAttempts = 0
+    let disposed = false
 
-    if (isMpegTs(channel.url) && mpegts.getFeatureList().mseLivePlayback) {
-      tsPlayer = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: source })
-      tsPlayer.attachMediaElement(video)
-      tsPlayer.on(mpegts.Events.ERROR, () => setError('Não foi possível reproduzir este canal. A fonte pode estar indisponível ou exigir outro formato.'))
-      tsPlayer.load()
-      void tsPlayer.play().catch(() => undefined)
+    const cleanupVideo = () => {
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+    }
+
+    const startMpegTs = (url: string) => {
+      if (disposed || !mpegts.getFeatureList().mseLivePlayback) return false
+      try {
+        tsPlayer?.destroy()
+        tsPlayer = mpegts.createPlayer({
+          type: 'mpegts',
+          isLive: true,
+          url: proxyStreamUrl(url),
+          cors: true,
+          liveBufferLatencyChasing: true,
+          liveBufferLatencyMaxLatency: 8,
+          liveBufferLatencyMinRemain: 2,
+        } as any)
+        tsPlayer.attachMediaElement(video)
+        tsPlayer.on(mpegts.Events.ERROR, (_type, detail) => {
+          if (!disposed) setError(`Não foi possível reproduzir este canal (${String(detail || 'erro MPEG-TS')}).`)
+        })
+        tsPlayer.load()
+        video.muted = true
+        void tsPlayer.play().catch(() => undefined)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    const sourceUrl = usingFallback ? xtreamTsFallback(channel.url) || channel.url : channel.url
+
+    if (isMpegTs(sourceUrl)) {
+      if (!startMpegTs(sourceUrl)) setError('O navegador não conseguiu iniciar a reprodução MPEG-TS deste canal.')
     } else if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true, lowLatencyMode: true, backBufferLength: 30 })
-      hls.loadSource(source)
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        backBufferLength: 30,
+        maxBufferLength: 20,
+        maxMaxBufferLength: 40,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 6,
+        manifestLoadingMaxRetry: 4,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingMaxRetry: 4,
+        fragLoadingMaxRetry: 5,
+        fragLoadingRetryDelay: 1000,
+        appendErrorMaxRetry: 3,
+      })
+
       hls.attachMedia(video)
-      hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => undefined))
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        if (!disposed) hls?.loadSource(proxyStreamUrl(sourceUrl))
+      })
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (disposed) return
+        video.muted = true
+        void video.play().catch(() => undefined)
+      })
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal) return
+        if (disposed || !data.fatal) return
+
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          setError('Falha de rede ao carregar o canal. Tente novamente.')
-          hls?.startLoad()
-        } else setError('Não foi possível reproduzir este HLS. Verifique a disponibilidade da fonte.')
+          if (networkRecoveryAttempts < 2) {
+            networkRecoveryAttempts += 1
+            hls?.startLoad()
+            return
+          }
+
+          const fallback = xtreamTsFallback(channel.url)
+          if (fallback && !usingFallback) {
+            setUsingFallback(true)
+            setRetryKey((value) => value + 1)
+            return
+          }
+
+          setError(`Falha de rede no HLS (${data.details || 'erro de carregamento'}).`)
+          return
+        }
+
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (mediaRecoveryAttempts === 0) {
+            mediaRecoveryAttempts += 1
+            hls?.recoverMediaError()
+            return
+          }
+          if (mediaRecoveryAttempts === 1) {
+            mediaRecoveryAttempts += 1
+            try { hls?.swapAudioCodec() } catch { /* ignore */ }
+            hls?.recoverMediaError()
+            return
+          }
+
+          const fallback = xtreamTsFallback(channel.url)
+          if (fallback && !usingFallback) {
+            setUsingFallback(true)
+            setRetryKey((value) => value + 1)
+            return
+          }
+
+          setError(`Falha de mídia no HLS (${data.details || 'formato não suportado'}).`)
+          return
+        }
+
+        const fallback = xtreamTsFallback(channel.url)
+        if (fallback && !usingFallback) {
+          setUsingFallback(true)
+          setRetryKey((value) => value + 1)
+        } else {
+          setError(`O HLS não pôde ser reproduzido (${data.details || 'erro desconhecido'}).`)
+        }
       })
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = source
-      const onError = () => setError('Não foi possível reproduzir este stream. Verifique a disponibilidade da fonte.')
+      video.src = proxyStreamUrl(sourceUrl)
+      const onLoaded = () => { video.muted = true; void video.play().catch(() => undefined) }
+      const onError = () => setError('Não foi possível reproduzir este stream HLS.')
+      video.addEventListener('loadedmetadata', onLoaded)
       video.addEventListener('error', onError)
-      void video.play().catch(() => undefined)
       return () => {
+        disposed = true
+        video.removeEventListener('loadedmetadata', onLoaded)
         video.removeEventListener('error', onError)
-        video.pause(); video.removeAttribute('src'); video.load()
+        cleanupVideo()
       }
-    } else setError('Este navegador não oferece suporte ao formato deste stream.')
+    } else {
+      setError('Este navegador não oferece suporte ao formato deste stream.')
+    }
 
     return () => {
-      hls?.destroy(); tsPlayer?.destroy(); video.pause(); video.removeAttribute('src'); video.load()
+      disposed = true
+      hls?.destroy()
+      tsPlayer?.destroy()
+      cleanupVideo()
     }
-  }, [channel, retryKey])
+  }, [channel, retryKey, usingFallback])
 
   if (!channel) return <div className="empty-player"><div className="empty-player-icon"><Play size={28} /></div><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
 
   return <div className="video-wrapper">
-    <video ref={videoRef} controls playsInline />
-    <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{isMpegTs(channel.url) ? 'MPEG-TS' : 'HLS'}</small></div>
-    {error && <div className="video-error"><span>{error}</span><button onClick={() => setRetryKey((value) => value + 1)}><RefreshCw size={14} /> Tentar novamente</button></div>}
+    <video ref={videoRef} controls playsInline preload="auto" />
+    <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{usingFallback ? 'MPEG-TS' : isMpegTs(channel.url) ? 'MPEG-TS' : 'HLS'}</small></div>
+    {error && <div className="video-error"><span>{error}</span><button onClick={() => { setUsingFallback(false); setRetryKey((value) => value + 1) }}><RefreshCw size={14} /> Tentar novamente</button></div>}
   </div>
 }
 
@@ -107,6 +221,7 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null)
   const [recentChannels, setRecentChannels] = useState<Channel[]>([])
+  const [favoriteChannels, setFavoriteChannels] = useState<Channel[]>([])
   const [mode, setMode] = useState<'m3u' | 'xtream'>('m3u')
   const [playlistUrl, setPlaylistUrl] = useState('')
   const [server, setServer] = useState('')
@@ -119,23 +234,26 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    setRecentChannels(readRecentChannels())
+    setRecentChannels(readStoredChannels(RECENT_STORAGE_KEY, MAX_RECENT_CHANNELS))
+    setFavoriteChannels(readStoredChannels(FAVORITES_STORAGE_KEY))
     void loadPlaylist().then((stored) => { setPlaylist(stored); setReady(true) })
   }, [])
 
-  const groups = useMemo(() => playlist ? ['Todos', ...Array.from(new Set(playlist.channels.map((c) => c.group).filter(Boolean))).sort((a, b) => a.localeCompare(b))] : [], [playlist])
+  const groups = useMemo(() => playlist ? Array.from(new Set(playlist.channels.map((c) => c.group).filter(Boolean))).sort((a, b) => a.localeCompare(b)) : [], [playlist])
   const filteredChannels = useMemo(() => playlist?.channels.filter((channel) => {
-    const groupMatch = selectedGroup === 'Todos' || selectedGroup === 'Recentes' || channel.group === selectedGroup
+    const groupMatch = selectedGroup === 'Todos' || selectedGroup === 'Recentes' || selectedGroup === 'Favoritos' || channel.group === selectedGroup
     return groupMatch && channel.name.toLowerCase().includes(query.toLowerCase())
   }) ?? [], [playlist, query, selectedGroup])
   const channels = selectedGroup === 'Recentes'
     ? recentChannels.filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
-    : filteredChannels
+    : selectedGroup === 'Favoritos'
+      ? favoriteChannels.filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
+      : filteredChannels
 
   function addRecent(channel: Channel) {
     setRecentChannels((current) => {
       const next = [channel, ...current.filter((item) => item.id !== channel.id)].slice(0, MAX_RECENT_CHANNELS)
-      writeRecentChannels(next)
+      writeStoredChannels(RECENT_STORAGE_KEY, next, MAX_RECENT_CHANNELS)
       return next
     })
   }
@@ -147,9 +265,19 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  function toggleFavorite(channel: Channel) {
+    setFavoriteChannels((current) => {
+      const exists = current.some((item) => item.id === channel.id)
+      const next = exists ? current.filter((item) => item.id !== channel.id) : [channel, ...current]
+      writeStoredChannels(FAVORITES_STORAGE_KEY, next)
+      return next
+    })
+  }
+
   function clearRecents() {
     setRecentChannels([])
     try { localStorage.removeItem(RECENT_STORAGE_KEY) } catch { /* ignore storage errors */ }
+    if (selectedGroup === 'Recentes') setSelectedGroup('Todos')
   }
 
   async function importFile(file: File) { await importContent(file.name.replace(/\.[^.]+$/, '') || 'Minha playlist', await file.text()) }
@@ -222,24 +350,18 @@ export default function App() {
     {urlError && <div className="url-error">{urlError}</div>}<div className="privacy-note">A conexão é feita sob demanda. Os dados não são enviados para um banco do StreamHub.</div>
   </section></main>
 
+  const favorite = selectedChannel ? favoriteChannels.some((item) => item.id === selectedChannel.id) : false
+
   return <div className="app-shell">
     <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir menu"><Menu size={21} /></button><div className="brand"><Tv size={21} /><span>StreamHub</span></div><div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" /></div><button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button><button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
     <div className="layout">
       <main className="content">
-        <section className="watch-area"><div className="player-card"><div className="player-screen"><Player channel={selectedChannel} /></div></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" /> : <Tv size={25} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div></div>}</section>
-        <div className="category-strip"><button className={selectedGroup === 'Todos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Todos')}><LayoutGrid size={15} /> Todos</button><button className={selectedGroup === 'Recentes' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Recentes')}><Clock3 size={15} /> Recentes</button>{groups.filter((group) => group !== 'Todos').map((group) => <button key={group} className={selectedGroup === group ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup(group)}>{group}</button>)}</div>
-        <section className="channels-section"><div className="section-heading"><div><span className="eyebrow">{selectedGroup === 'Recentes' ? 'HISTÓRICO' : 'BIBLIOTECA'}</span><h2>{selectedGroup === 'Recentes' ? 'Canais recentes' : selectedGroup}</h2></div><span className="count">{channels.length.toLocaleString('pt-BR')} canais</span></div><div className="channel-grid">{channels.map((channel) => <button className={selectedChannel?.id === channel.id ? 'channel-card selected' : 'channel-card'} key={channel.id} onClick={() => selectChannel(channel)}><div className="channel-thumb">{channel.logo ? <img src={channel.logo} alt="" loading="lazy" /> : <Tv size={34} />}<span className="live-badge">AO VIVO</span><span className="thumb-play"><Play size={18} fill="currentColor" /></span></div><div className="channel-info"><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" loading="lazy" /> : <Tv size={18} />}</div><div><strong>{channel.name}</strong><span>{channel.group}</span></div></div></button>)}</div>{!channels.length && <div className="empty-list">{selectedGroup === 'Recentes' ? 'Nenhum canal recente.' : 'Nenhum canal corresponde à sua busca.'}</div>}</section>
+        <section className="watch-area"><div className="player-card"><div className="player-screen"><Player channel={selectedChannel} /></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div><button className="ghost-button" onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}><Star size={19} fill={favorite ? 'currentColor' : 'none'} /></button></div>}</div></section>
+        <div className="category-strip"><button className={selectedGroup === 'Todos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Todos')}>Todos</button><button className={selectedGroup === 'Recentes' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Recentes')}><Clock3 size={14} /> Recentes</button><button className={selectedGroup === 'Favoritos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Favoritos')}><Star size={14} /> Favoritos</button>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup(group)}>{group}</button>)}</div>
+        <section className="channels-section"><div className="section-heading"><div><span className="eyebrow">BIBLIOTECA</span><h2>{selectedGroup === 'Todos' ? 'Todos os canais' : selectedGroup}</h2></div><span className="count">{channels.length} canais</span></div>{channels.length ? <div className="channel-grid">{channels.map((channel) => <button key={channel.id} className={selectedChannel?.id === channel.id ? 'channel-card selected' : 'channel-card'} onClick={() => selectChannel(channel)}><div className="channel-thumb">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={42} />}<span className="live-badge">AO VIVO</span><span className="thumb-play"><Play size={15} fill="currentColor" /></span></div><div className="channel-info"><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={17} />}</div><div><strong>{channel.name}</strong><span>{channel.group} · transmissão ao vivo</span></div></div></button>)}</div> : <div className="empty-list">Nenhum canal encontrado.</div>}</section>
       </main>
-      <aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}><div className="playlist-title"><strong>{playlist.name}</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais</span></div><nav>
-        <button className={selectedGroup === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Todos')}><Home size={18} /><span>Início</span></button>
-        <button className={selectedGroup === 'Recentes' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Recentes')}><Clock3 size={18} /><span>Recentes</span><em>{recentChannels.length}</em></button>
-        <button className="nav-item" onClick={() => window.alert('Favoritos será disponibilizado em uma próxima etapa.')}><Star size={18} /><span>Favoritos</span></button>
-        <div className="nav-divider" /><div className="nav-heading">CATEGORIAS</div>
-        {groups.filter((group) => group !== 'Todos').map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup(group)}><Radio size={16} /><span>{group}</span></button>)}
-        <div className="nav-divider" />
-        <button className="nav-item clear-recent" onClick={clearRecents} disabled={!recentChannels.length}><Trash2 size={16} /><span>Limpar recentes</span></button>
-      </nav></aside>
-      {sidebarOpen && <button className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-label="Fechar menu" />}
+      <aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}><div className="playlist-title"><strong>{playlist.name}</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais</span></div><nav><button className={selectedGroup === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Todos')}><Home size={18} /><span>Início</span></button><button className={selectedGroup === 'Recentes' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Recentes')}><Clock3 size={18} /><span>Recentes</span>{recentChannels.length > 0 && <small>{recentChannels.length}</small>}</button><button className={selectedGroup === 'Favoritos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Favoritos')}><Star size={18} /><span>Favoritos</span></button><div className="nav-divider" /><div className="nav-heading">CATEGORIAS</div>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup(group)}><Radio size={17} /><span>{group}</span></button>)}<div className="nav-divider" /><button className="nav-item" onClick={clearRecents} disabled={!recentChannels.length}><Trash2 size={17} /><span>Limpar recentes</span></button></nav></aside>
+      {sidebarOpen && <button className="sidebar-overlay" aria-label="Fechar menu" onClick={() => setSidebarOpen(false)} />}
     </div>
   </div>
 }
