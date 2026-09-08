@@ -50,6 +50,43 @@ function localApi(): Plugin {
       }
     },
     transform(code, id) {
+      if (id.endsWith('/src/styles.css')) {
+        const extra = `
+
+/* StreamHub UI extensions */
+.sidebar{width:320px;flex-basis:320px}
+.nav-item span{min-width:0}
+.nav-item small{margin-left:auto;min-width:24px;padding:2px 6px;border-radius:10px;background:#171d28;color:#8a98ad;font-size:10px;font-weight:800;text-align:center;line-height:1.2}
+.nav-item:hover small,.nav-item.active small{background:rgba(74,140,255,.14);color:#8fb9ff}
+.nav-heading{white-space:nowrap}
+.recent-list{display:flex;flex-direction:column;gap:7px}
+.recent-row{display:flex;align-items:center;gap:8px;padding:7px;border:1px solid rgba(255,255,255,.06);border-radius:12px;background:#0f131b}
+.recent-main{min-width:0;flex:1;display:flex;align-items:center;gap:11px;padding:4px;border:0;background:transparent;color:#eef2f8;text-align:left}
+.recent-main>div:last-child{min-width:0}
+.recent-main strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.recent-main span{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#697587;font-size:11px}
+.recent-remove{width:32px;height:32px;flex:0 0 32px;display:grid;place-items:center;border:0;border-radius:9px;background:transparent;color:#6d798b}
+.recent-remove:hover{background:#20161a;color:#ff9aa4}
+.active-toggle{background:#15233a!important;color:#72a9ff!important}
+.theater-mode .topbar{z-index:70}
+.theater-mode .layout{display:block;min-height:calc(100vh - 64px)}
+.theater-mode .sidebar{display:none}
+.theater-mode .content{max-width:100%;padding:16px 24px 34px}
+.theater-mode .watch-area,.theater-mode .category-strip,.theater-mode .channels-section{width:min(1500px,100%)}
+.theater-mode .player-screen{border-radius:10px;box-shadow:0 20px 70px rgba(0,0,0,.42)}
+.adult-chip{border:1px solid rgba(194,53,66,.25)}
+.adult-chip.active{background:#3a161d;color:#ffb4ba}
+.adult-area{padding:16px;border:1px solid rgba(194,53,66,.2);border-radius:16px;background:linear-gradient(180deg,rgba(72,18,25,.18),rgba(10,12,17,.3))}
+.adult-heading{color:#c35a67}
+.adult-nav-item{border:1px solid rgba(194,53,66,.16)}
+.adult-nav-icon{width:31px!important;height:22px;display:grid!important;place-items:center;flex:0 0 31px;padding:0!important;border-radius:6px;background:#481920;color:#ffb4ba!important;font-size:9px;font-weight:900;letter-spacing:.02em}
+@media(max-width:1100px){.sidebar{width:280px;flex-basis:280px}}
+@media(max-width:800px){.sidebar{width:320px;flex-basis:320px}}
+@media(max-width:560px){.sidebar{width:min(92vw,320px);flex-basis:min(92vw,320px)}.theater-mode .content{padding:8px 10px 28px}.recent-row{padding:6px}.recent-remove{width:30px;height:30px;flex-basis:30px}}
+`
+        return { code: code + extra, map: null }
+      }
+
       if (!id.endsWith('/src/components/Player.tsx')) return null
       let fixed = code
 
@@ -90,6 +127,11 @@ function localApi(): Plugin {
 
       fixed = fixed.replace(
         "        <button className=\"player-action\" onClick={goLive} title=\"Ir para o ao vivo\"><Radio size={16} /></button>\n",
+        "",
+      )
+
+      fixed = fixed.replace(
+        "        <span className=\"player-time\">{formatTime(currentTime)}</span>\n        <span className=\"player-time\">{Number.isFinite(duration) ? ` / ${formatTime(duration)}` : ''}</span>\n",
         "",
       )
 
