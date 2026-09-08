@@ -9,6 +9,10 @@ function isMpegTs(url: string) {
   return value.endsWith('.ts') || value.endsWith('.m2ts')
 }
 
+function isDirectVideo(url: string) {
+  return /\.(?:mp4|m4v|webm|mkv|avi|mov)(?:$|\?)/i.test(url)
+}
+
 function proxyStreamUrl(url: string) {
   return `/api/stream?url=${encodeURIComponent(url)}`
 }
@@ -24,7 +28,6 @@ function uniqueVariants(channel: Channel | null): ChannelVariant[] {
 }
 
 function safePlay(video: HTMLVideoElement, audible = false) {
-  if (audible) video.muted = false
   void video.play().catch((error: unknown) => {
     if (error instanceof DOMException && error.name === 'AbortError') return
     if (audible) {
@@ -78,6 +81,8 @@ export default function Player({ channel }: Props) {
     }, 1500)
   }
 
+  useEffect(() => () => { if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current) }, [])
+
   useEffect(() => {
     setVariantId(null)
     setUsingFallback(false)
@@ -111,17 +116,18 @@ export default function Player({ channel }: Props) {
       video.removeEventListener('enterpictureinpicture', onEnterPiP)
       video.removeEventListener('leavepictureinpicture', onLeavePiP)
     }
-  }, [])
+  }, [channel !== null])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
-      if (target?.tagName === 'INPUT' || target?.tagName === 'SELECT' || target?.tagName === 'TEXTAREA') return
+      if (target?.isContentEditable || target?.tagName === 'BUTTON' || target?.tagName === 'INPUT' || target?.tagName === 'SELECT' || target?.tagName === 'TEXTAREA') return
       const video = videoRef.current
       if (!video) return
       if (event.code === 'Space') { event.preventDefault(); void (video.paused ? safePlay(video) : video.pause()) }
       else if (event.key.toLowerCase() === 'm') { event.preventDefault(); video.muted = !video.muted }
       else if (event.key.toLowerCase() === 'f') { event.preventDefault(); void toggleFullscreen() }
+      else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); setPlayerVolume((video.muted ? 0 : video.volume) + (event.key === 'ArrowUp' ? 0.05 : -0.05)); showControls() }
       else if (event.key === 'ArrowLeft') { event.preventDefault(); seekBy(-10) }
       else if (event.key === 'ArrowRight') { event.preventDefault(); seekBy(10) }
     }
@@ -169,8 +175,6 @@ export default function Player({ channel }: Props) {
     setError(null)
     setHlsLevels([])
     setHlsQuality(-1)
-    video.muted = false
-    video.volume = 1
 
     const startTs = (url: string) => {
       if (disposed || !mpegts.getFeatureList().mseLivePlayback) return false
@@ -197,7 +201,14 @@ export default function Player({ channel }: Props) {
       }
     }
 
-    if (isMpegTs(activeUrl)) {
+    if (isDirectVideo(activeUrl)) {
+      video.src = proxyStreamUrl(activeUrl)
+      const onLoaded = () => safePlay(video, true)
+      const onError = () => fail('O navegador não conseguiu reproduzir este vídeo.')
+      video.addEventListener('loadedmetadata', onLoaded)
+      video.addEventListener('error', onError)
+      return () => { disposed = true; video.removeEventListener('loadedmetadata', onLoaded); video.removeEventListener('error', onError); cleanupVideo() }
+    } else if (isMpegTs(activeUrl)) {
       if (!startTs(activeUrl)) fail('O navegador não conseguiu iniciar este stream MPEG-TS.')
     } else if (Hls.isSupported()) {
       const hls = new Hls({
@@ -270,7 +281,7 @@ export default function Player({ channel }: Props) {
   }, [channel, activeUrl, retryKey, usingFallback])
 
   const togglePlay = () => { const video = videoRef.current; if (!video) return; if (video.paused) safePlay(video); else video.pause() }
-  const toggleMute = () => { const video = videoRef.current; if (!video) return; video.muted = !video.muted }
+  const toggleMute = () => { const video = videoRef.current; if (!video) return; if (video.volume === 0) { video.volume = 0.5; video.muted = false } else video.muted = !video.muted }
   const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false }
   const seekBy = (delta: number) => { const video = videoRef.current; if (!video || !Number.isFinite(video.duration)) return; video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + delta)) }
   const goLive = () => { const video = videoRef.current; if (!video) return; const livePosition = Number((hlsRef.current as any)?.liveSyncPosition); if (Number.isFinite(livePosition)) video.currentTime = livePosition; else if (Number.isFinite(video.duration)) video.currentTime = Math.max(0, video.duration - 0.5) }
@@ -287,7 +298,7 @@ export default function Player({ channel }: Props) {
   const fullscreenRootStyle = isFullscreen ? { width: '100vw', height: '100vh', aspectRatio: 'auto' as const, maxWidth: '100vw', maxHeight: '100vh' } : undefined
   const fullscreenVideoStyle = isFullscreen ? { width: '100%', height: '100%', objectFit: 'contain' as const, maxWidth: '100%', maxHeight: '100%' } : undefined
 
-  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} style={fullscreenRootStyle} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
+  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} style={fullscreenRootStyle} onFocusCapture={showControls} onPointerDown={showControls} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
     <video ref={videoRef} controls={false} playsInline preload="auto" style={fullscreenVideoStyle} onClick={handleVideoClick} />
     <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
     {error && <div className="video-error"><span>{error}</span><button onClick={retry}><RefreshCw size={14} /> Tentar novamente</button></div>}
@@ -299,7 +310,7 @@ export default function Player({ channel }: Props) {
         <button className="player-action" onClick={() => seekBy(-10)} title="Voltar 10 segundos"><SkipBack size={16} /></button>
         <button className="player-action" onClick={() => seekBy(10)} title="Avançar 10 segundos"><SkipForward size={16} /></button>
         <button className="player-action" onClick={toggleMute} title={isMuted ? 'Ativar som' : 'Silenciar'}>{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
-        <input className="player-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} style={{ background: `linear-gradient(90deg, #4a8cff 0%, #4a8cff ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,.22) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,.22) 100%)` }} onPointerDown={showControls} onChange={(event) => setPlayerVolume(Number(event.target.value))} />
+        <div className="volume-control"><input className="player-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} onPointerDown={showControls} aria-valuetext={`${Math.round((isMuted ? 0 : volume) * 100)}%`} onChange={(event) => setPlayerVolume(Number(event.target.value))} /><span className="volume-value">{Math.round((isMuted ? 0 : volume) * 100)}%</span></div>
         <span className="player-control-spacer" />
         {variants.length > 1 && <div className="player-settings-wrap">
           <button className="player-action" onClick={() => { setSettingsOpen((value) => !value); showControls() }} title="Qualidade"><Settings2 size={17} /></button>

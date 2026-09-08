@@ -1,4 +1,5 @@
 import type { Channel } from '../types'
+import { categorizeChannels } from './categorize'
 
 const ATTRIBUTE_PATTERN = /([\w-]+)="([^"]*)"/g
 
@@ -51,5 +52,5 @@ export function parseM3U(content: string): Channel[] {
     }
   }
 
-  return channels
+  return categorizeChannels(channels)
 }

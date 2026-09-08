@@ -38,6 +38,10 @@ export default async function handler(req: Request): Promise<Response> {
   target.searchParams.set('username', username)
   target.searchParams.set('password', password)
   if (action) target.searchParams.set('action', action)
+  for (const key of ['category_id', 'series_id', 'vod_id', 'stream_id', 'limit']) {
+    const value = text(params.get(key))
+    if (value) target.searchParams.set(key, value)
+  }
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS)

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff, Menu, Home, Radio, RefreshCw, Clock3, Trash2, Theater } from 'lucide-react'
+import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff, Menu, Home, Radio, RefreshCw, Clock3, Trash2, Theater, List, LayoutGrid, Film, Clapperboard, ChevronLeft, CalendarDays } from 'lucide-react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import { parseM3U } from './lib/m3u'
 import { clearPlaylist, loadPlaylist, savePlaylist } from './lib/storage'
-import type { Channel, Playlist } from './types'
+import type { Channel, MediaItem, Playlist, XtreamConnection } from './types'
 import ModernPlayer from './components/Player'
 import { collapseChannelVariants } from './lib/channelVariants'
+import { categorizeChannel, categorizeChannels, compareCategories } from './lib/categorize'
 
 const RECENT_STORAGE_KEY = 'streamhub-recent-channels'
 const FAVORITES_STORAGE_KEY = 'streamhub-favorite-channels'
@@ -15,6 +16,66 @@ const THEATER_STORAGE_KEY = 'streamhub-theater-mode'
 
 function createPlaylist(name: string, channels: Channel[]): Playlist {
   return { id: crypto.randomUUID(), name, channels, importedAt: new Date().toISOString() }
+}
+
+function xtreamApiBase(connection: XtreamConnection) {
+  return `/api/xtream?server=${encodeURIComponent(connection.server)}&username=${encodeURIComponent(connection.username)}&password=${encodeURIComponent(connection.password)}`
+}
+
+function inferXtreamConnection(channels: Channel[]): XtreamConnection | null {
+  for (const channel of channels) {
+    try {
+      const url = new URL(channel.url)
+      const match = url.pathname.match(/^\/live\/([^/]+)\/([^/]+)\//)
+      if (match) return { server: url.origin, username: decodeURIComponent(match[1]), password: decodeURIComponent(match[2]) }
+    } catch { /* try the next channel */ }
+  }
+  return null
+}
+
+async function loadMediaCatalog(connection: XtreamConnection): Promise<MediaItem[]> {
+  const base = xtreamApiBase(connection)
+  const [vodCategoriesResponse, vodResponse, seriesCategoriesResponse, seriesResponse] = await Promise.all([
+    fetch(`${base}&action=get_vod_categories`),
+    fetch(`${base}&action=get_vod_streams`),
+    fetch(`${base}&action=get_series_categories`),
+    fetch(`${base}&action=get_series`),
+  ])
+  const vodCategories = vodCategoriesResponse.ok ? await vodCategoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
+  const seriesCategories = seriesCategoriesResponse.ok ? await seriesCategoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
+  const vodCategoryMap = new Map(vodCategories.map((item) => [String(item.category_id), item.category_name || 'Filmes']))
+  const seriesCategoryMap = new Map(seriesCategories.map((item) => [String(item.category_id), item.category_name || 'Séries']))
+  const movies = vodResponse.ok ? await vodResponse.json() as Array<{ stream_id?: string | number; name?: string; category_id?: string | number; stream_icon?: string; container_extension?: string }> : []
+  const series = seriesResponse.ok ? await seriesResponse.json() as Array<{ series_id?: string | number; name?: string; category_id?: string | number; cover?: string }> : []
+  const movieItems: MediaItem[] = movies.filter((item) => item.stream_id != null && item.name).map((item) => ({
+    id: `movie-${item.stream_id}`,
+    name: item.name || 'Filme sem nome',
+    kind: 'movie',
+    category: vodCategoryMap.get(String(item.category_id)) || 'Filmes',
+    poster: item.stream_icon || undefined,
+    streamUrl: `${connection.server}/movie/${encodeURIComponent(connection.username)}/${encodeURIComponent(connection.password)}/${item.stream_id}.${String(item.container_extension || 'mp4').replace(/^\./, '')}`,
+  }))
+  const seriesItems: MediaItem[] = series.filter((item) => item.series_id != null && item.name).map((item) => ({
+    id: `series-${item.series_id}`,
+    name: item.name || 'Série sem nome',
+    kind: 'series',
+    category: seriesCategoryMap.get(String(item.category_id)) || 'Séries',
+    poster: item.cover || undefined,
+    seriesId: String(item.series_id),
+  }))
+  return [...movieItems, ...seriesItems]
+}
+
+type EpgProgram = { title: string; description: string; start: number; end: number }
+
+function decodeEpgText(value?: string) {
+  if (!value) return ''
+  try { return decodeURIComponent(escape(atob(value))) } catch { return value }
+}
+
+function channelStreamId(channel: Channel) {
+  if (channel.streamId) return channel.streamId
+  try { return new URL(channel.url).pathname.match(/\/([^/]+)\.[^.]+$/)?.[1] || '' } catch { return '' }
 }
 
 function canonicalChannelKey(channel: Channel) {
@@ -127,7 +188,7 @@ function Player({ channel }: { channel: Channel | null }) {
         tsRef.current = player
         player.attachMediaElement(video)
         player.on(mpegts.Events.ERROR, (_type, detail) => markError(`Falha MPEG-TS: ${String(detail || 'erro desconhecido')}`))
-        player.load(); startWatchdog(); void player.play().catch(() => undefined); return true
+        player.load(); startWatchdog(); void Promise.resolve(player.play()).catch(() => undefined); return true
       } catch (cause) { markError(`Não foi possível iniciar MPEG-TS: ${String(cause)}`); return false }
     }
     const sourceUrl = usingFallback ? xtreamTsFallback(channel.url) || channel.url : channel.url
@@ -169,6 +230,15 @@ export default function App() {
   const [playlist, setPlaylist] = useState<Playlist | null>(null)
   const [ready, setReady] = useState(false)
   const [selectedGroup, setSelectedGroup] = useState('Todos')
+  const [selectedSubgroup, setSelectedSubgroup] = useState('Todos')
+  const [contentMode, setContentMode] = useState<'home' | 'live' | 'movie' | 'series'>('home')
+  const [categoryStyle, setCategoryStyle] = useState<'smart' | 'provider'>('smart')
+  const [selectedMediaCategory, setSelectedMediaCategory] = useState('Todos')
+  const [selectedSeries, setSelectedSeries] = useState<MediaItem | null>(null)
+  const [seriesEpisodes, setSeriesEpisodes] = useState<Channel[]>([])
+  const [seriesLoading, setSeriesLoading] = useState(false)
+  const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([])
+  const [epgLoading, setEpgLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null)
   const [recentChannels, setRecentChannels] = useState<Channel[]>([])
@@ -183,28 +253,95 @@ export default function App() {
   const [urlError, setUrlError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [theaterMode, setTheaterMode] = useState(false)
+  const [channelView, setChannelView] = useState<'grid' | 'list'>(() => {
+    try { return localStorage.getItem('streamhub-channel-view') === 'list' ? 'list' : 'grid' } catch { return 'grid' }
+  })
+  const [miniPlayer, setMiniPlayer] = useState(false)
+  const playerSlotRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    setRecentChannels(readStoredChannels(RECENT_STORAGE_KEY, MAX_RECENT_CHANNELS))
-    setFavoriteChannels(readStoredChannels(FAVORITES_STORAGE_KEY))
+    const slot = playerSlotRef.current
+    if (!slot || !selectedChannel) { setMiniPlayer(false); return }
+    const observer = new IntersectionObserver(([entry]) => {
+      setMiniPlayer(!entry.isIntersecting && entry.boundingClientRect.top < 0)
+    }, { rootMargin: '-64px 0px 0px 0px' })
+    observer.observe(slot)
+    return () => observer.disconnect()
+  }, [ready, playlist !== null, selectedChannel !== null])
+
+  function changeChannelView(view: 'grid' | 'list') {
+    setChannelView(view)
+    try { localStorage.setItem('streamhub-channel-view', view) } catch {}
+  }
+
+  useEffect(() => {
+    setRecentChannels(readStoredChannels(RECENT_STORAGE_KEY, MAX_RECENT_CHANNELS).map(categorizeChannel))
+    setFavoriteChannels(readStoredChannels(FAVORITES_STORAGE_KEY).map(categorizeChannel))
     try { setTheaterMode(localStorage.getItem(THEATER_STORAGE_KEY) === '1') } catch {}
-    void loadPlaylist().then((stored) => { setPlaylist(stored); setReady(true) })
+    void loadPlaylist().then(async (stored) => {
+      if (stored) {
+        const categorized = { ...stored, channels: categorizeChannels(stored.channels) }
+        setPlaylist(categorized)
+        await savePlaylist(categorized).catch(() => undefined)
+        const connection = categorized.xtream || inferXtreamConnection(categorized.channels)
+        if (connection && !categorized.media?.length) {
+          void loadMediaCatalog(connection).then(async (media) => {
+            const enriched = { ...categorized, xtream: connection, media }
+            setPlaylist(enriched)
+            await savePlaylist(enriched).catch(() => undefined)
+          }).catch(() => undefined)
+        }
+      }
+      setReady(true)
+    })
   }, [])
+
+  useEffect(() => {
+    const connection = playlist?.xtream || inferXtreamConnection(playlist?.channels || [])
+    const streamId = selectedChannel ? channelStreamId(selectedChannel) : ''
+    if (contentMode !== 'live' || !connection || !streamId) { setEpgPrograms([]); return }
+    let cancelled = false
+    setEpgLoading(true)
+    fetch(`${xtreamApiBase(connection)}&action=get_short_epg&stream_id=${encodeURIComponent(streamId)}&limit=8`)
+      .then(async (response) => response.ok ? response.json() : Promise.reject())
+      .then((data: { epg_listings?: Array<{ title?: string; description?: string; start_timestamp?: string | number; stop_timestamp?: string | number }> }) => {
+        if (cancelled) return
+        const programs = (data.epg_listings || []).map((item) => ({
+          title: decodeEpgText(item.title) || 'Programa sem título',
+          description: decodeEpgText(item.description),
+          start: Number(item.start_timestamp || 0),
+          end: Number(item.stop_timestamp || 0),
+        })).filter((item) => item.end * 1000 >= Date.now()).slice(0, 6)
+        setEpgPrograms(programs)
+      })
+      .catch(() => { if (!cancelled) setEpgPrograms([]) })
+      .finally(() => { if (!cancelled) setEpgLoading(false) })
+    return () => { cancelled = true }
+  }, [selectedChannel?.url, contentMode, playlist?.xtream])
 
   const favoriteKeys = useMemo(() => new Set(favoriteChannels.map(canonicalChannelKey)), [favoriteChannels])
   const favoritePlaylistChannels = useMemo(() => playlist?.channels.filter((channel) => favoriteKeys.has(canonicalChannelKey(channel))) ?? [], [playlist, favoriteKeys])
   const regularPlaylistChannels = useMemo(() => playlist?.channels.filter((channel) => !isAdultChannel(channel)) ?? [], [playlist])
   const adultPlaylistChannels = useMemo(() => playlist?.channels.filter(isAdultChannel) ?? [], [playlist])
-  const groups = useMemo(() => Array.from(new Set(regularPlaylistChannels.map((c) => c.group).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'pt-BR')), [regularPlaylistChannels])
+  const groupName = (channel: Channel) => categoryStyle === 'provider' ? channel.sourceGroup || channel.group : channel.group
+  const groups = useMemo(() => Array.from(new Set(regularPlaylistChannels.map(groupName).filter(Boolean))).sort(categoryStyle === 'smart' ? compareCategories : (a, b) => a.localeCompare(b, 'pt-BR')), [regularPlaylistChannels, categoryStyle])
+  const subgroups = useMemo(() => selectedGroup === 'Todos' || selectedGroup === 'Recentes' || selectedGroup === 'Favoritos'
+    ? []
+    : categoryStyle === 'provider' ? [] : Array.from(new Set(regularPlaylistChannels.filter((channel) => channel.group === selectedGroup).map((channel) => channel.subgroup).filter((value): value is string => Boolean(value)))).sort((a, b) => a.localeCompare(b, 'pt-BR')),
+  [regularPlaylistChannels, selectedGroup, categoryStyle])
   const filteredRegularChannels = useMemo(() => collapseChannelVariants(regularPlaylistChannels).filter((channel) => {
-    const groupMatch = selectedGroup === 'Todos' || selectedGroup === 'Recentes' || selectedGroup === 'Favoritos' || selectedGroup === '+18' || channel.group === selectedGroup
-    return groupMatch && channel.name.toLowerCase().includes(query.toLowerCase())
-  }), [regularPlaylistChannels, query, selectedGroup])
+    const groupMatch = selectedGroup === 'Todos' || selectedGroup === 'Recentes' || selectedGroup === 'Favoritos' || selectedGroup === '+18' || groupName(channel) === selectedGroup
+    const subgroupMatch = selectedSubgroup === 'Todos' || channel.subgroup === selectedSubgroup
+    return groupMatch && subgroupMatch && channel.name.toLowerCase().includes(query.toLowerCase())
+  }), [regularPlaylistChannels, query, selectedGroup, selectedSubgroup, categoryStyle])
   const recentCollapsed = useMemo(() => collapseChannelVariants(recentChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase())), [recentChannels, query])
   const favoriteCollapsed = useMemo(() => collapseChannelVariants(favoritePlaylistChannels.filter((channel) => !isAdultChannel(channel))).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase())), [favoritePlaylistChannels, query])
   const adultCollapsed = useMemo(() => collapseChannelVariants(adultPlaylistChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase())), [adultPlaylistChannels, query])
   const channels = selectedGroup === 'Recentes' ? recentCollapsed : selectedGroup === 'Favoritos' ? favoriteCollapsed : selectedGroup === '+18' ? adultCollapsed : filteredRegularChannels
+  const mediaItems = useMemo(() => (playlist?.media || []).filter((item) => item.kind === contentMode), [playlist?.media, contentMode])
+  const mediaCategories = useMemo(() => Array.from(new Set(mediaItems.map((item) => item.category))).sort((a, b) => a.localeCompare(b, 'pt-BR')), [mediaItems])
+  const filteredMedia = useMemo(() => mediaItems.filter((item) => (selectedMediaCategory === 'Todos' || item.category === selectedMediaCategory) && item.name.toLowerCase().includes(query.toLowerCase())), [mediaItems, selectedMediaCategory, query])
 
   function addRecent(channel: Channel) {
     setRecentChannels((current) => {
@@ -215,13 +352,36 @@ export default function App() {
   function removeRecent(channel: Channel) {
     setRecentChannels((current) => { const next = current.filter((item) => canonicalChannelKey(item) !== canonicalChannelKey(channel)); writeStoredChannels(RECENT_STORAGE_KEY, next, MAX_RECENT_CHANNELS); return next })
   }
-  function selectChannel(channel: Channel) { setSelectedChannel(channel); addRecent(channel); setSidebarOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  function selectChannel(channel: Channel) {
+    setSelectedChannel(channel)
+    addRecent(channel)
+    setSidebarOpen(false)
+  }
   function toggleFavorite(channel: Channel) { const key = canonicalChannelKey(channel); setFavoriteChannels((current) => { const exists = current.some((item) => canonicalChannelKey(item) === key); const next = exists ? current.filter((item) => canonicalChannelKey(item) !== key) : [channel, ...current]; writeStoredChannels(FAVORITES_STORAGE_KEY, next); return next }) }
   function clearRecents() { setRecentChannels([]); try { localStorage.removeItem(RECENT_STORAGE_KEY) } catch {}; if (selectedGroup === 'Recentes') setSelectedGroup('Todos') }
-  function selectGroup(group: string) { setSelectedGroup(group); setSelectedChannel(null); setSidebarOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  function selectGroup(group: string) { setSelectedGroup(group); setSelectedSubgroup('Todos'); setSidebarOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  function selectContentMode(nextMode: 'home' | 'live' | 'movie' | 'series') { setContentMode(nextMode); setSelectedMediaCategory('Todos'); setSelectedSeries(null); setSidebarOpen(false) }
+  function playMovie(item: MediaItem) { if (item.streamUrl) selectChannel({ id: item.id, name: item.name, url: item.streamUrl, group: 'Filmes', subgroup: item.category, logo: item.poster }) }
+  async function openSeries(item: MediaItem) {
+    const connection = playlist?.xtream || inferXtreamConnection(playlist?.channels || [])
+    if (!connection || !item.seriesId) return
+    setSelectedSeries(item); setSeriesEpisodes([]); setSeriesLoading(true)
+    try {
+      const response = await fetch(`${xtreamApiBase(connection)}&action=get_series_info&series_id=${encodeURIComponent(item.seriesId)}`)
+      if (!response.ok) throw new Error('Não foi possível carregar os episódios.')
+      const data = await response.json() as { episodes?: Record<string, Array<{ id?: string | number; episode_num?: number; title?: string; container_extension?: string; info?: { movie_image?: string } }>> }
+      const episodes = Object.entries(data.episodes || {}).flatMap(([season, items]) => items.map((episode, index) => ({
+        id: `episode-${item.seriesId}-${episode.id || `${season}-${index}`}`,
+        name: episode.title || `${item.name} · T${season} E${episode.episode_num || index + 1}`,
+        url: `${connection.server}/series/${encodeURIComponent(connection.username)}/${encodeURIComponent(connection.password)}/${episode.id}.${String(episode.container_extension || 'mp4').replace(/^\./, '')}`,
+        group: 'Séries', subgroup: `${item.name} · Temporada ${season}`, logo: episode.info?.movie_image || item.poster,
+      })))
+      setSeriesEpisodes(episodes)
+    } catch { setSeriesEpisodes([]) } finally { setSeriesLoading(false) }
+  }
   function toggleTheater() { setTheaterMode((current) => { const next = !current; try { localStorage.setItem(THEATER_STORAGE_KEY, next ? '1' : '0') } catch {}; return next }) }
   async function importFile(file: File) { await importContent(file.name.replace(/\.[^.]+$/, '') || 'Minha playlist', await file.text()) }
-  async function importContent(name: string, content: string) { const channels = parseM3U(content); if (!channels.length) return window.alert('Nenhum canal válido foi encontrado nessa playlist.'); const next = createPlaylist(name, channels); await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setSelectedChannel(null); setUrlError(null) }
+  async function importContent(name: string, content: string) { const channels = parseM3U(content); if (!channels.length) return window.alert('Nenhum canal válido foi encontrado nessa playlist.'); const next = createPlaylist(name, channels); await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setUrlError(null) }
   async function importUrl() { const url = playlistUrl.trim(); if (!url) return; try { new URL(url) } catch { setUrlError('Informe uma URL válida.'); return }; setUrlLoading(true); setUrlError(null); try { const response = await fetch(`/api/playlist?url=${encodeURIComponent(url)}`); if (!response.ok) throw new Error(await response.text()); await importContent(new URL(url).hostname || 'Playlist por URL', await response.text()); setPlaylistUrl('') } catch (cause) { setUrlError(cause instanceof Error ? cause.message : 'Não foi possível importar esta URL.') } finally { setUrlLoading(false) } }
   async function connectXtream() {
     const normalizedServer = normalizeServer(server)
@@ -237,9 +397,12 @@ export default function App() {
       const categories = categoriesResponse.ok ? await categoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
       const categoryMap = new Map(categories.map((category) => [String(category.category_id), category.category_name || 'Outros']))
       const liveStreams = await liveResponse.json() as Array<{ stream_id?: number | string; name?: string; category_id?: number | string; category_name?: string; stream_icon?: string; container_extension?: string }>
-      const channels: Channel[] = liveStreams.filter((stream) => stream.stream_id != null && stream.name).map((stream, index) => { const extension = String(stream.container_extension || 'm3u8').toLowerCase().replace(/^\./, ''); const safeExtension = extension === 'ts' || extension === 'm3u8' ? extension : 'm3u8'; return { id: `xtream-${stream.stream_id}-${index}`, name: stream.name || 'Canal sem nome', url: `${normalizedServer}/live/${encodeURIComponent(username.trim())}/${encodeURIComponent(password)}/${stream.stream_id}.${safeExtension}`, group: categoryMap.get(String(stream.category_id)) || stream.category_name || 'Outros', logo: stream.stream_icon || undefined } })
+      const channels: Channel[] = categorizeChannels(liveStreams.filter((stream) => stream.stream_id != null && stream.name).map((stream, index) => { const extension = String(stream.container_extension || 'm3u8').toLowerCase().replace(/^\./, ''); const safeExtension = extension === 'ts' || extension === 'm3u8' ? extension : 'm3u8'; const originalGroup = categoryMap.get(String(stream.category_id)) || stream.category_name || 'Outros'; return { id: `xtream-${stream.stream_id}-${index}`, streamId: String(stream.stream_id), name: stream.name || 'Canal sem nome', url: `${normalizedServer}/live/${encodeURIComponent(username.trim())}/${encodeURIComponent(password)}/${stream.stream_id}.${safeExtension}`, group: originalGroup, sourceGroup: originalGroup, logo: stream.stream_icon || undefined } }))
       if (!channels.length) throw new Error('A conta foi conectada, mas nenhum canal ao vivo foi encontrado.')
-      const next = createPlaylist(`${normalizedServer.replace(/^https?:\/\//, '')} — IPTV`, channels); await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setSelectedChannel(null)
+      const connection = { server: normalizedServer, username: username.trim(), password }
+      const media = await loadMediaCatalog(connection).catch(() => [])
+      const next = { ...createPlaylist(`${normalizedServer.replace(/^https?:\/\//, '')} — IPTV`, channels), xtream: connection, media }
+      await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setContentMode('home')
     } catch (cause) { setUrlError(cause instanceof Error ? cause.message : 'Não foi possível conectar ao serviço IPTV.') } finally { setUrlLoading(false) }
   }
   function reset() { void clearPlaylist(); clearRecents(); setFavoriteChannels([]); try { localStorage.removeItem(FAVORITES_STORAGE_KEY) } catch {}; setPlaylist(null); setSelectedChannel(null); setSelectedGroup('Todos'); setQuery('') }
@@ -250,9 +413,26 @@ export default function App() {
   const favorite = selectedChannel ? favoriteKeys.has(canonicalChannelKey(selectedChannel)) : false
   return <div className={`app-shell ${theaterMode ? 'theater-mode' : ''}`}>
     <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir menu"><Menu size={21} /></button><div className="brand"><Tv size={21} /><span>StreamHub</span></div><div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" />{query && <button className="search-clear" type="button" aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={15} /></button>}</div><button className={theaterMode ? 'ghost-button active-toggle' : 'ghost-button'} onClick={toggleTheater} title={theaterMode ? 'Sair do modo teatro' : 'Modo teatro'}><Theater size={18} /></button><button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button><button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
-    <div className="layout"><main className="content"><section className="watch-area"><div className="player-card"><div className="player-screen"><ModernPlayer channel={selectedChannel} /></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div><button className="ghost-button" onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}><Star size={19} fill={favorite ? 'currentColor' : 'none'} /></button></div>}</div></section>
-      <div className="category-strip"><button className={selectedGroup === 'Todos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Todos')}>Todos</button><button className={selectedGroup === 'Recentes' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Recentes')}><Clock3 size={14} /> Recentes</button><button className={selectedGroup === 'Favoritos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Favoritos')}><Star size={14} /> Favoritos</button>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup(group)}>{group}</button>)}{adultCollapsed.length > 0 && <button className={selectedGroup === '+18' ? 'category-chip active adult-chip' : 'category-chip adult-chip'} onClick={() => selectGroup('+18')}>+18</button>}</div>
-      <section className="channels-section"><div className="section-heading"><div><span className="eyebrow">BIBLIOTECA</span><h2>{selectedGroup === '+18' ? 'Área +18' : selectedGroup === 'Todos' ? 'Todos os canais' : selectedGroup}</h2></div><span className="count">{channels.length} canais</span></div>{selectedGroup === 'Recentes' && channels.length ? <div className="recent-list">{channels.map((channel) => <div key={channel.id} className="recent-row"><button className="recent-main" onClick={() => selectChannel(channel)}><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={18} />}</div><div><strong>{channel.name}</strong><span>{channel.group} · transmissão ao vivo</span></div></button><button className="recent-remove" aria-label={`Remover ${channel.name} dos recentes`} title="Remover dos recentes" onClick={() => removeRecent(channel)}><X size={15} /></button></div>)}</div> : channels.length ? <div className={selectedGroup === '+18' ? 'channel-grid adult-area' : 'channel-grid'}>{channels.map((channel) => <button key={channel.id} className={selectedChannel?.id === channel.id ? 'channel-card selected' : 'channel-card'} onClick={() => selectChannel(channel)}><div className="channel-thumb">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={42} />}<span className="live-badge">AO VIVO</span><span className="thumb-play"><Play size={15} fill="currentColor" /></span></div><div className="channel-info"><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={17} />}</div><div><strong>{channel.name}</strong><span>{channel.group} · transmissão ao vivo</span></div></div></button>)}</div> : <div className="empty-list">{selectedGroup === '+18' ? 'Nenhum canal +18 encontrado.' : 'Nenhum canal encontrado.'}</div>}</section>
-    </main><aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}><div className="playlist-title"><strong>{playlist.name}</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais</span></div><nav><button className={selectedGroup === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Todos')}><Home size={18} /><span>Início</span></button><button className={selectedGroup === 'Recentes' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Recentes')}><Clock3 size={18} /><span>Recentes</span>{recentChannels.length > 0 && <small>{recentChannels.length}</small>}</button><button className={selectedGroup === 'Favoritos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Favoritos')}><Star size={18} /><span>Favoritos</span>{favoriteChannels.length > 0 && <small>{favoriteChannels.length}</small>}</button><div className="nav-divider" /><div className="nav-heading">CATEGORIAS</div>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup(group)}><Radio size={17} /><span>{group}</span></button>)}{adultCollapsed.length > 0 && <><div className="nav-divider" /><div className="nav-heading adult-heading">CONTEÚDO +18</div><button className={selectedGroup === '+18' ? 'nav-item active adult-nav-item' : 'nav-item adult-nav-item'} onClick={() => selectGroup('+18')}><span className="adult-nav-icon">+18</span><span>Área +18</span><small>{adultCollapsed.length}</small></button></>}<div className="nav-divider" /><button className="nav-item" onClick={clearRecents} disabled={!recentChannels.length}><Trash2 size={17} /><span>Limpar recentes</span></button></nav></aside>{sidebarOpen && <button className="sidebar-overlay" aria-label="Fechar menu" onClick={() => setSidebarOpen(false)} />}</div>
+    <div className="layout"><main className="content"><section className="watch-area"><div className="player-card"><div ref={playerSlotRef} className="player-slot"><div className={`player-screen ${miniPlayer ? 'mini-player' : ''}`}><ModernPlayer channel={selectedChannel} />{miniPlayer && <button className="mini-return" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} title="Voltar ao player">Expandir</button>}</div></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div><button className="ghost-button" onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}><Star size={19} fill={favorite ? 'currentColor' : 'none'} /></button></div>}</div></section>
+      {contentMode === 'live' && selectedChannel && <section className="epg-guide"><div className="epg-title"><CalendarDays size={17} /><strong>Programação</strong></div>{epgLoading ? <span className="epg-empty">Carregando programação...</span> : epgPrograms.length ? <div className="epg-list">{epgPrograms.map((program, index) => <div key={`${program.start}-${index}`} className={index === 0 && program.start * 1000 <= Date.now() ? 'current' : ''}><time>{new Date(program.start * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time><span><strong>{program.title}</strong>{program.description && <small>{program.description}</small>}</span>{index === 0 && program.start * 1000 <= Date.now() && <em>AGORA</em>}</div>)}</div> : <span className="epg-empty">Este canal não forneceu a programação.</span>}</section>}
+      {contentMode !== 'home' && <nav className="content-tabs" aria-label="Tipo de conteúdo"><button className={contentMode === 'live' ? 'active' : ''} onClick={() => selectContentMode('live')}><Radio size={16} /> Ao vivo</button><button className={contentMode === 'movie' ? 'active' : ''} onClick={() => selectContentMode('movie')}><Film size={16} /> Filmes <small>{playlist.media?.filter((item) => item.kind === 'movie').length || 0}</small></button><button className={contentMode === 'series' ? 'active' : ''} onClick={() => selectContentMode('series')}><Clapperboard size={16} /> Séries <small>{playlist.media?.filter((item) => item.kind === 'series').length || 0}</small></button></nav>}
+      {contentMode === 'home' ? <section className="home-selector"><span className="eyebrow">O QUE VOCÊ QUER ASSISTIR?</span><h1>Escolha uma biblioteca</h1><div><button onClick={() => selectContentMode('live')}><Radio size={28} /><strong>TV ao vivo</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais</span></button><button onClick={() => selectContentMode('movie')}><Film size={28} /><strong>Filmes</strong><span>{playlist.media?.filter((item) => item.kind === 'movie').length || 0} títulos</span></button><button onClick={() => selectContentMode('series')}><Clapperboard size={28} /><strong>Séries</strong><span>{playlist.media?.filter((item) => item.kind === 'series').length || 0} séries</span></button></div></section> : contentMode === 'live' ? <section className="channels-section">
+        <div className="section-heading"><div><span className="eyebrow">BIBLIOTECA</span><h2>{selectedGroup === '+18' ? 'Área +18' : selectedGroup === 'Todos' ? 'Todos os canais' : selectedGroup}</h2></div><div className="library-actions"><span className="count">{channels.length} canais</span><div className="view-toggle" role="group" aria-label="Visualização dos canais"><button aria-label="Quadrados" title="Quadrados" aria-pressed={channelView === 'grid'} onClick={() => changeChannelView('grid')}><LayoutGrid size={18} /></button><button aria-label="Lista" title="Lista" aria-pressed={channelView === 'list'} onClick={() => changeChannelView('list')}><List size={18} /></button></div></div></div>
+        <div className="category-mode-toggle"><span>Organização:</span><button className={categoryStyle === 'smart' ? 'active' : ''} onClick={() => { setCategoryStyle('smart'); setSelectedGroup('Todos'); setSelectedSubgroup('Todos') }}>Inteligente</button><button className={categoryStyle === 'provider' ? 'active' : ''} onClick={() => { setCategoryStyle('provider'); setSelectedGroup('Todos'); setSelectedSubgroup('Todos') }}>Original do IPTV</button></div>
+        {subgroups.length > 0 && <div className="subcategory-strip"><button className={selectedSubgroup === 'Todos' ? 'active' : ''} onClick={() => setSelectedSubgroup('Todos')}>Todos</button>{subgroups.map((subgroup) => <button key={subgroup} className={selectedSubgroup === subgroup ? 'active' : ''} onClick={() => setSelectedSubgroup(subgroup)}>{subgroup}</button>)}</div>}
+        {channelView === 'list' && channels.length ? <div className="recent-list">{channels.map((channel) => <div key={channel.id} className={selectedChannel?.url === channel.url ? 'recent-row selected' : 'recent-row'}><button className="recent-main" onClick={() => selectChannel(channel)}><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={18} />}</div><div><strong>{channel.name}</strong><span>{channel.subgroup || channel.group} · transmissão ao vivo</span></div></button>{selectedGroup === 'Recentes' && <button className="recent-remove" aria-label={`Remover ${channel.name} dos recentes`} title="Remover dos recentes" onClick={() => removeRecent(channel)}><X size={15} /></button>}</div>)}</div> : channels.length ? <div className={selectedGroup === '+18' ? 'channel-grid adult-area' : 'channel-grid'}>{channels.map((channel) => <button key={channel.id} className={selectedChannel?.url === channel.url ? 'channel-card selected' : 'channel-card'} onClick={() => selectChannel(channel)}><div className="channel-thumb">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={42} />}<span className="live-badge">AO VIVO</span><span className="thumb-play"><Play size={15} fill="currentColor" /></span></div><div className="channel-info"><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={17} />}</div><div><strong>{channel.name}</strong><span>{channel.subgroup || channel.group} · transmissão ao vivo</span></div></div></button>)}</div> : <div className="empty-list">{selectedGroup === '+18' ? 'Nenhum canal +18 encontrado.' : 'Nenhum canal encontrado.'}</div>}
+      </section> : <section className="channels-section media-library">
+        <div className="section-heading"><div><span className="eyebrow">{contentMode === 'movie' ? 'FILMES' : 'SÉRIES'}</span><h2>{selectedSeries?.name || (contentMode === 'movie' ? 'Catálogo de filmes' : 'Catálogo de séries')}</h2></div><span className="count">{selectedSeries ? seriesEpisodes.length : filteredMedia.length} títulos</span></div>
+        {selectedSeries ? <><button className="series-back" onClick={() => { setSelectedSeries(null); setSeriesEpisodes([]) }}><ChevronLeft size={16} /> Voltar às séries</button>{seriesLoading ? <div className="empty-list"><LoaderCircle className="spin" size={22} /> Carregando episódios...</div> : seriesEpisodes.length ? <div className="episode-list">{seriesEpisodes.map((episode) => <button key={episode.id} onClick={() => selectChannel(episode)}><Play size={15} /><span><strong>{episode.name}</strong><small>{episode.subgroup}</small></span></button>)}</div> : <div className="empty-list">Nenhum episódio encontrado.</div>}</> : <>{mediaCategories.length > 1 && <div className="subcategory-strip media-categories"><button className={selectedMediaCategory === 'Todos' ? 'active' : ''} onClick={() => setSelectedMediaCategory('Todos')}>Todos</button>{mediaCategories.map((category) => <button key={category} className={selectedMediaCategory === category ? 'active' : ''} onClick={() => setSelectedMediaCategory(category)}>{category}</button>)}</div>}<div className="media-grid">{filteredMedia.map((item) => <button key={item.id} className="media-card" onClick={() => item.kind === 'movie' ? playMovie(item) : void openSeries(item)}><div className="media-poster">{item.poster ? <img src={item.poster} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = 'none' }} /> : item.kind === 'movie' ? <Film size={32} /> : <Clapperboard size={32} />}<span className="thumb-play"><Play size={15} fill="currentColor" /></span></div><strong>{item.name}</strong><span>{item.category}</span></button>)}</div>{!filteredMedia.length && <div className="empty-list">Nenhum título encontrado.</div>}</>}
+      </section>}
+    </main><aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
+      <div className="playlist-title"><strong>{playlist.name}</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais · {playlist.media?.length || 0} títulos</span></div>
+      <nav>
+        <button className={contentMode === 'home' ? 'nav-item active' : 'nav-item'} onClick={() => selectContentMode('home')}><Home size={18} /><span>Início</span></button>
+        {contentMode === 'home' && <><button className="nav-item" onClick={() => selectContentMode('live')}><Radio size={18} /><span>TV ao vivo</span></button><button className="nav-item" onClick={() => selectContentMode('movie')}><Film size={18} /><span>Filmes</span></button><button className="nav-item" onClick={() => selectContentMode('series')}><Clapperboard size={18} /><span>Séries</span></button></>}
+        {contentMode === 'live' && <><button className={selectedGroup === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Todos')}><Radio size={18} /><span>Todos os canais</span></button><button className={selectedGroup === 'Recentes' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Recentes')}><Clock3 size={18} /><span>Recentes</span>{recentChannels.length > 0 && <small>{recentChannels.length}</small>}</button><button className={selectedGroup === 'Favoritos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Favoritos')}><Star size={18} /><span>Favoritos</span>{favoriteChannels.length > 0 && <small>{favoriteChannels.length}</small>}</button><div className="nav-divider" /><div className="nav-heading">{categoryStyle === 'smart' ? 'CATEGORIAS INTELIGENTES' : 'CATEGORIAS DO IPTV'}</div>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup(group)}><Radio size={17} /><span>{group}</span></button>)}{adultCollapsed.length > 0 && <><div className="nav-divider" /><button className={selectedGroup === '+18' ? 'nav-item active adult-nav-item' : 'nav-item adult-nav-item'} onClick={() => selectGroup('+18')}><span className="adult-nav-icon">+18</span><span>Área +18</span></button></>}<div className="nav-divider" /><button className="nav-item" onClick={clearRecents} disabled={!recentChannels.length}><Trash2 size={17} /><span>Limpar recentes</span></button></>}
+        {(contentMode === 'movie' || contentMode === 'series') && <><button className="nav-item" onClick={() => selectContentMode(contentMode === 'movie' ? 'live' : 'movie')}>{contentMode === 'movie' ? <Radio size={18} /> : <Film size={18} />}<span>{contentMode === 'movie' ? 'TV ao vivo' : 'Filmes'}</span></button><button className="nav-item" onClick={() => selectContentMode(contentMode === 'series' ? 'live' : 'series')}>{contentMode === 'series' ? <Radio size={18} /> : <Clapperboard size={18} />}<span>{contentMode === 'series' ? 'TV ao vivo' : 'Séries'}</span></button><div className="nav-divider" /><div className="nav-heading">CATEGORIAS</div><button className={selectedMediaCategory === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => setSelectedMediaCategory('Todos')}><LayoutGrid size={17} /><span>Todos</span></button>{mediaCategories.map((category) => <button key={category} className={selectedMediaCategory === category ? 'nav-item active' : 'nav-item'} onClick={() => { setSelectedMediaCategory(category); setSelectedSeries(null); setSidebarOpen(false) }}><Film size={17} /><span>{category}</span></button>)}</>}
+      </nav>
+    </aside>{sidebarOpen && <button className="sidebar-overlay" aria-label="Fechar menu" onClick={() => setSidebarOpen(false)} />}</div>
   </div>
 }
