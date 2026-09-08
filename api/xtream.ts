@@ -5,7 +5,6 @@ function normalizeServer(value: string) {
   if (!/^https?:\/\//i.test(raw)) return null
   try {
     const url = new URL(raw)
-    if (!['http:', 'https:'].includes(url.protocol)) return null
     const host = url.hostname.toLowerCase()
     if (host === 'localhost' || host === '::1' || host.endsWith('.local')) return null
     if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return null
@@ -29,6 +28,7 @@ export default async function handler(req: Request): Promise<Response> {
   const server = normalizeServer(text(params.get('server')))
   const username = text(params.get('username'))
   const password = text(params.get('password'))
+  const action = text(params.get('action'))
 
   if (!server || !username || !password) {
     return Response.json({ error: 'Servidor, usuário e senha são obrigatórios.' }, { status: 400 })
@@ -37,6 +37,7 @@ export default async function handler(req: Request): Promise<Response> {
   const target = new URL('/player_api.php', server)
   target.searchParams.set('username', username)
   target.searchParams.set('password', password)
+  if (action) target.searchParams.set('action', action)
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS)
