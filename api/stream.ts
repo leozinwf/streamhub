@@ -26,7 +26,6 @@ function rewriteManifest(content: string, requestUrl: string, baseUrl: URL) {
       const trimmed = line.trim()
       if (!trimmed) return line
 
-      // HLS uses URI= for encryption keys, maps, subtitles and other auxiliary resources.
       if (trimmed.startsWith('#')) {
         return line.replace(/URI="([^"]+)"/gi, (_match, value: string) => {
           try {
@@ -38,13 +37,25 @@ function rewriteManifest(content: string, requestUrl: string, baseUrl: URL) {
       }
 
       try {
-        // Every playlist/segment reference goes back through the same proxy.
         return proxiedUrl(new URL(trimmed, baseUrl), requestUrl)
       } catch {
         return line
       }
     })
     .join('\n')
+}
+
+function copySafeResponseHeaders(source: Headers) {
+  const headers = new Headers()
+  for (const key of ['content-type', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    const value = source.get(key)
+    if (value) headers.set(key, value)
+  }
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Pragma', 'no-cache')
+  headers.set('Access-Control-Allow-Origin', '*')
+  headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified')
+  return headers
 }
 
 export default async function handler(req: Request): Promise<Response> {
@@ -62,13 +73,20 @@ export default async function handler(req: Request): Promise<Response> {
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS)
 
   try {
+    const upstreamHeaders: Record<string, string> = {
+      Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t, video/mp2t; codecs="avc1.42E01E,mp4a.40.2", */*',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 StreamHub/1.0',
+      'Accept-Encoding': 'identity',
+    }
+
+    // HLS can use byte ranges. Preserve the browser's Range request so the
+    // upstream CDN receives the same request semantics.
+    const range = req.headers.get('range')
+    if (range) upstreamHeaders.Range = range
+
     const upstream = await fetch(target, {
       signal: controller.signal,
-      headers: {
-        Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t, */*',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 StreamHub/1.0',
-        Connection: 'keep-alive',
-      },
+      headers: upstreamHeaders,
       redirect: 'follow',
     })
 
@@ -91,10 +109,7 @@ export default async function handler(req: Request): Promise<Response> {
         return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
       }
 
-      // Use the final redirected URL as the base. This is important when the provider
-      // redirects the request to a CDN with a different host/path.
       const rewritten = rewriteManifest(content, req.url, finalUrl)
-
       return new Response(rewritten, {
         status: 200,
         headers: {
@@ -102,20 +117,20 @@ export default async function handler(req: Request): Promise<Response> {
           'Cache-Control': 'no-store, no-cache, must-revalidate',
           Pragma: 'no-cache',
           'Access-Control-Allow-Origin': '*',
+          'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified',
         },
       })
     }
 
-    const headers = new Headers()
-    const passthrough = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']
-    for (const key of passthrough) {
-      const value = upstream.headers.get(key)
-      if (value) headers.set(key, value)
+    const headers = copySafeResponseHeaders(upstream.headers)
+    if (!headers.has('content-type')) {
+      if (/\.ts(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search)) headers.set('Content-Type', 'video/mp2t')
+      else headers.set('Content-Type', 'application/octet-stream')
     }
-    headers.set('Cache-Control', 'no-store')
-    headers.set('Access-Control-Allow-Origin', '*')
-    headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified')
 
+    // Deliberately do not copy Content-Length. Node's fetch can transparently
+    // decode an upstream response, which can make the original length incorrect
+    // for the body we are streaming to the browser.
     return new Response(upstream.body, { status: upstream.status, headers })
   } catch (error) {
     const message = error instanceof DOMException && error.name === 'AbortError'
