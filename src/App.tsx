@@ -48,11 +48,24 @@ function xtreamTsFallback(url: string) {
   return url.replace(/\.m3u8(?=$|\?)/i, '.ts')
 }
 
+type PlayerMode = 'hls' | 'mpegts' | 'native'
+
+type DebugState = {
+  mode: PlayerMode | '—'
+  manifest: '—' | 'carregando' | 'ok' | 'erro'
+  firstSegment: '—' | 'carregando' | 'ok' | 'erro'
+  lastError: string
+  elapsed: number
+}
+
 function Player({ channel }: { channel: Channel | null }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const hlsRef = useRef<Hls | null>(null)
+  const tsRef = useRef<ReturnType<typeof mpegts.createPlayer> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
   const [usingFallback, setUsingFallback] = useState(false)
+  const [debug, setDebug] = useState<DebugState>({ mode: '—', manifest: '—', firstSegment: '—', lastError: '', elapsed: 0 })
 
   useEffect(() => {
     const video = videoRef.current
@@ -60,23 +73,73 @@ function Player({ channel }: { channel: Channel | null }) {
 
     setError(null)
     setUsingFallback(false)
-    let hls: Hls | null = null
-    let tsPlayer: ReturnType<typeof mpegts.createPlayer> | null = null
+    setDebug({ mode: '—', manifest: '—', firstSegment: '—', lastError: '', elapsed: 0 })
+
+    let disposed = false
     let mediaRecoveryAttempts = 0
     let networkRecoveryAttempts = 0
-    let disposed = false
+    let progressTimer: ReturnType<typeof setInterval> | null = null
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null
+    let lastCurrentTime = 0
+    let sourceStartedAt = Date.now()
+
+    const stopTimers = () => {
+      if (progressTimer) clearInterval(progressTimer)
+      if (watchdogTimer) clearTimeout(watchdogTimer)
+      progressTimer = null
+      watchdogTimer = null
+    }
 
     const cleanupVideo = () => {
+      stopTimers()
       video.pause()
       video.removeAttribute('src')
       video.load()
     }
 
+    const destroyPlayers = () => {
+      try { hlsRef.current?.destroy() } catch { /* ignore */ }
+      try { tsRef.current?.destroy() } catch { /* ignore */ }
+      hlsRef.current = null
+      tsRef.current = null
+    }
+
+    const markError = (message: string) => {
+      if (disposed) return
+      setDebug((current) => ({ ...current, lastError: message, elapsed: Math.round((Date.now() - sourceStartedAt) / 1000) }))
+      setError(message)
+    }
+
+    const startWatchdog = () => {
+      stopTimers()
+      sourceStartedAt = Date.now()
+      lastCurrentTime = video.currentTime || 0
+
+      progressTimer = setInterval(() => {
+        if (disposed) return
+        const elapsed = Math.round((Date.now() - sourceStartedAt) / 1000)
+        const currentTime = video.currentTime || 0
+        if (currentTime > lastCurrentTime + 0.15) {
+          setDebug((current) => ({ ...current, firstSegment: 'ok', elapsed }))
+        }
+        lastCurrentTime = currentTime
+        setDebug((current) => ({ ...current, elapsed }))
+      }, 1000)
+
+      watchdogTimer = setTimeout(() => {
+        if (disposed) return
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.currentTime < 0.5) {
+          markError('O manifesto carregou, mas o vídeo não recebeu dados suficientes para iniciar.')
+        }
+      }, 10000)
+    }
+
     const startMpegTs = (url: string) => {
       if (disposed || !mpegts.getFeatureList().mseLivePlayback) return false
       try {
-        tsPlayer?.destroy()
-        tsPlayer = mpegts.createPlayer({
+        tsRef.current?.destroy()
+        setDebug((current) => ({ ...current, mode: 'mpegts', manifest: 'ok', firstSegment: 'carregando' }))
+        const player = mpegts.createPlayer({
           type: 'mpegts',
           isLive: true,
           url: proxyStreamUrl(url),
@@ -85,15 +148,18 @@ function Player({ channel }: { channel: Channel | null }) {
           liveBufferLatencyMaxLatency: 8,
           liveBufferLatencyMinRemain: 2,
         } as any)
-        tsPlayer.attachMediaElement(video)
-        tsPlayer.on(mpegts.Events.ERROR, (_type, detail) => {
-          if (!disposed) setError(`Não foi possível reproduzir este canal (${String(detail || 'erro MPEG-TS')}).`)
+        tsRef.current = player
+        player.attachMediaElement(video)
+        player.on(mpegts.Events.ERROR, (_type, detail) => {
+          markError(`Falha MPEG-TS: ${String(detail || 'erro desconhecido')}`)
         })
-        tsPlayer.load()
+        player.load()
         video.muted = true
-        void tsPlayer.play().catch(() => undefined)
+        startWatchdog()
+        void player.play().catch(() => undefined)
         return true
-      } catch {
+      } catch (cause) {
+        markError(`Não foi possível iniciar MPEG-TS: ${String(cause)}`)
         return false
       }
     }
@@ -101,116 +167,152 @@ function Player({ channel }: { channel: Channel | null }) {
     const sourceUrl = usingFallback ? xtreamTsFallback(channel.url) || channel.url : channel.url
 
     if (isMpegTs(sourceUrl)) {
-      if (!startMpegTs(sourceUrl)) setError('O navegador não conseguiu iniciar a reprodução MPEG-TS deste canal.')
+      setDebug((current) => ({ ...current, mode: 'mpegts' }))
+      if (!startMpegTs(sourceUrl)) markError('O navegador não conseguiu iniciar a reprodução MPEG-TS deste canal.')
     } else if (Hls.isSupported()) {
-      hls = new Hls({
+      setDebug((current) => ({ ...current, mode: 'hls', manifest: 'carregando', firstSegment: 'carregando' }))
+
+      const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
-        backBufferLength: 30,
-        maxBufferLength: 20,
-        maxMaxBufferLength: 40,
+        startPosition: -1,
+        backBufferLength: 20,
+        maxBufferLength: 12,
+        maxMaxBufferLength: 24,
         liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 6,
-        manifestLoadingMaxRetry: 4,
+        liveMaxLatencyDurationCount: 8,
+        manifestLoadingMaxRetry: 2,
         manifestLoadingRetryDelay: 1000,
-        levelLoadingMaxRetry: 4,
-        fragLoadingMaxRetry: 5,
+        levelLoadingMaxRetry: 2,
+        levelLoadingRetryDelay: 1000,
+        fragLoadingMaxRetry: 2,
         fragLoadingRetryDelay: 1000,
-        appendErrorMaxRetry: 3,
+        appendErrorMaxRetry: 2,
       })
+      hlsRef.current = hls
 
       hls.attachMedia(video)
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-        if (!disposed) hls?.loadSource(proxyStreamUrl(sourceUrl))
+        if (!disposed) hls.loadSource(proxyStreamUrl(sourceUrl))
+      })
+      hls.on(Hls.Events.MANIFEST_LOADING, () => {
+        if (!disposed) setDebug((current) => ({ ...current, manifest: 'carregando' }))
       })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (disposed) return
+        setDebug((current) => ({ ...current, manifest: 'ok', firstSegment: 'carregando' }))
         video.muted = true
+        startWatchdog()
         void video.play().catch(() => undefined)
       })
+      hls.on(Hls.Events.FRAG_LOADING, () => {
+        if (!disposed) setDebug((current) => ({ ...current, firstSegment: 'carregando' }))
+      })
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        if (!disposed) setDebug((current) => ({ ...current, firstSegment: 'ok' }))
+      })
+      hls.on(Hls.Events.FRAG_PARSED, () => {
+        if (!disposed) setDebug((current) => ({ ...current, firstSegment: 'ok' }))
+      })
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (disposed || !data.fatal) return
+        if (disposed) return
+        const details = data.details || 'erro desconhecido'
+        const status = data.response?.code ? ` HTTP ${data.response.code}` : ''
+        const message = `${details}${status}`
+        setDebug((current) => ({ ...current, lastError: message, elapsed: Math.round((Date.now() - sourceStartedAt) / 1000) }))
+        if (!data.fatal) return
 
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          if (networkRecoveryAttempts < 2) {
+          if (networkRecoveryAttempts < 1) {
             networkRecoveryAttempts += 1
-            hls?.startLoad()
+            hls.startLoad()
             return
           }
-
           const fallback = xtreamTsFallback(channel.url)
           if (fallback && !usingFallback) {
             setUsingFallback(true)
             setRetryKey((value) => value + 1)
             return
           }
-
-          setError(`Falha de rede no HLS (${data.details || 'erro de carregamento'}).`)
+          markError(`Falha de rede no HLS (${message}).`)
           return
         }
 
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           if (mediaRecoveryAttempts === 0) {
             mediaRecoveryAttempts += 1
-            hls?.recoverMediaError()
+            hls.recoverMediaError()
             return
           }
           if (mediaRecoveryAttempts === 1) {
             mediaRecoveryAttempts += 1
-            try { hls?.swapAudioCodec() } catch { /* ignore */ }
-            hls?.recoverMediaError()
+            try { hls.swapAudioCodec() } catch { /* ignore */ }
+            hls.recoverMediaError()
             return
           }
-
           const fallback = xtreamTsFallback(channel.url)
           if (fallback && !usingFallback) {
             setUsingFallback(true)
             setRetryKey((value) => value + 1)
             return
           }
-
-          setError(`Falha de mídia no HLS (${data.details || 'formato não suportado'}).`)
+          markError(`Falha de mídia no HLS (${message}).`)
           return
         }
 
-        const fallback = xtreamTsFallback(channel.url)
-        if (fallback && !usingFallback) {
-          setUsingFallback(true)
-          setRetryKey((value) => value + 1)
-        } else {
-          setError(`O HLS não pôde ser reproduzido (${data.details || 'erro desconhecido'}).`)
-        }
+        markError(`O HLS não pôde ser reproduzido (${message}).`)
       })
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      setDebug((current) => ({ ...current, mode: 'native', manifest: 'carregando', firstSegment: 'carregando' }))
       video.src = proxyStreamUrl(sourceUrl)
-      const onLoaded = () => { video.muted = true; void video.play().catch(() => undefined) }
-      const onError = () => setError('Não foi possível reproduzir este stream HLS.')
+      const onLoaded = () => {
+        setDebug((current) => ({ ...current, manifest: 'ok' }))
+        video.muted = true
+        startWatchdog()
+        void video.play().catch(() => undefined)
+      }
+      const onProgress = () => setDebug((current) => ({ ...current, firstSegment: 'ok' }))
+      const onError = () => markError('O player nativo não conseguiu carregar o HLS.')
       video.addEventListener('loadedmetadata', onLoaded)
+      video.addEventListener('progress', onProgress)
       video.addEventListener('error', onError)
       return () => {
         disposed = true
         video.removeEventListener('loadedmetadata', onLoaded)
+        video.removeEventListener('progress', onProgress)
         video.removeEventListener('error', onError)
         cleanupVideo()
       }
     } else {
-      setError('Este navegador não oferece suporte ao formato deste stream.')
+      markError('Este navegador não oferece suporte ao formato deste stream.')
     }
 
     return () => {
       disposed = true
-      hls?.destroy()
-      tsPlayer?.destroy()
+      stopTimers()
+      destroyPlayers()
       cleanupVideo()
     }
   }, [channel, retryKey, usingFallback])
 
   if (!channel) return <div className="empty-player"><div className="empty-player-icon"><Play size={28} /></div><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
 
+  const debugColor = (value: DebugState[keyof DebugState]) => value === 'ok' ? 'ok' : value === 'erro' ? 'error' : ''
+
   return <div className="video-wrapper">
     <video ref={videoRef} controls playsInline preload="auto" />
     <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{usingFallback ? 'MPEG-TS' : isMpegTs(channel.url) ? 'MPEG-TS' : 'HLS'}</small></div>
     {error && <div className="video-error"><span>{error}</span><button onClick={() => { setUsingFallback(false); setRetryKey((value) => value + 1) }}><RefreshCw size={14} /> Tentar novamente</button></div>}
+    <details className="player-debug">
+      <summary>Diagnóstico do player</summary>
+      <div className="player-debug-grid">
+        <span>Modo</span><strong>{debug.mode}</strong>
+        <span>Manifesto</span><strong className={debugColor(debug.manifest)}>{debug.manifest}</strong>
+        <span>Segmento</span><strong className={debugColor(debug.firstSegment)}>{debug.firstSegment}</strong>
+        <span>Tempo</span><strong>{debug.elapsed}s</strong>
+        <span>Último erro</span><strong className="debug-error-text">{debug.lastError || 'nenhum'}</strong>
+      </div>
+    </details>
   </div>
 }
 
@@ -300,7 +402,7 @@ export default function App() {
       if (!response.ok) throw new Error(await response.text())
       await importContent(new URL(url).hostname || 'Playlist por URL', await response.text())
       setPlaylistUrl('')
-    } catch (error) { setUrlError(error instanceof Error ? error.message : 'Não foi possível importar esta URL.') }
+    } catch (cause) { setUrlError(cause instanceof Error ? cause.message : 'Não foi possível importar esta URL.') }
     finally { setUrlLoading(false) }
   }
 
@@ -330,7 +432,7 @@ export default function App() {
       if (!channels.length) throw new Error('A conta foi conectada, mas nenhum canal ao vivo foi encontrado.')
       const next = createPlaylist(`${normalizedServer.replace(/^https?:\/\//, '')} — IPTV`, channels)
       await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setSelectedChannel(null)
-    } catch (error) { setUrlError(error instanceof Error ? error.message : 'Não foi possível conectar ao serviço IPTV.') }
+    } catch (cause) { setUrlError(cause instanceof Error ? cause.message : 'Não foi possível conectar ao serviço IPTV.') }
     finally { setUrlLoading(false) }
   }
 
