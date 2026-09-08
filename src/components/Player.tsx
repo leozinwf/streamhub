@@ -27,8 +27,8 @@ function formatTime(value: number) {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
 }
 
-function uniqueVariants(channel: Channel): ChannelVariant[] {
-  if (!channel.variants?.length) return []
+function uniqueVariants(channel: Channel | null): ChannelVariant[] {
+  if (!channel?.variants?.length) return []
   return Array.from(new Map(channel.variants.map((variant) => [variant.id, variant])).values())
 }
 
@@ -117,7 +117,6 @@ export default function Player({ channel }: Props) {
     let mediaRecoveryAttempts = 0
     let networkRecoveryAttempts = 0
     let watchdogTimer: ReturnType<typeof setTimeout> | null = null
-    let sourceStartedAt = Date.now()
 
     const cleanupVideo = () => {
       if (watchdogTimer) clearTimeout(watchdogTimer)
@@ -140,7 +139,6 @@ export default function Player({ channel }: Props) {
 
     const startWatchdog = () => {
       if (watchdogTimer) clearTimeout(watchdogTimer)
-      sourceStartedAt = Date.now()
       watchdogTimer = setTimeout(() => {
         if (!disposed && (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.currentTime < 0.5)) {
           fail('O stream carregou, mas não entregou dados suficientes para iniciar.')
@@ -251,22 +249,18 @@ export default function Player({ channel }: Props) {
     }
   }, [channel, activeUrl, retryKey, usingFallback])
 
-  if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
-
   const togglePlay = () => { const video = videoRef.current; if (!video) return; void (video.paused ? video.play() : video.pause()) }
   const toggleMute = () => { const video = videoRef.current; if (!video) return; video.muted = !video.muted }
   const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false }
   const seekBy = (delta: number) => { const video = videoRef.current; if (!video || !Number.isFinite(video.duration)) return; video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + delta)) }
   const goLive = () => { const video = videoRef.current; if (!video) return; const livePosition = Number((hlsRef.current as any)?.liveSyncPosition); if (Number.isFinite(livePosition)) video.currentTime = livePosition; else if (Number.isFinite(video.duration)) video.currentTime = Math.max(0, video.duration - 0.5) }
   const toggleFullscreen = async () => { const root = rootRef.current; if (!root) return; if (document.fullscreenElement) await document.exitFullscreen(); else await root.requestFullscreen() }
-  const togglePiP = async () => {
-    const video = videoRef.current as HTMLVideoElement & { requestPictureInPicture?: () => Promise<PictureInPictureWindow> }
-    if (!video.requestPictureInPicture) return
-    try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture() } catch { /* unsupported/rejected */ }
-  }
+  const togglePiP = async () => { const video = videoRef.current as HTMLVideoElement & { requestPictureInPicture?: () => Promise<PictureInPictureWindow> }; if (!video.requestPictureInPicture) return; try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture() } catch { /* unsupported/rejected */ } }
   const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
   const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
   const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }
+
+  if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
 
   return <div ref={rootRef} className="video-wrapper player-modern" onDoubleClick={() => void toggleFullscreen()}>
     <video ref={videoRef} controls={false} playsInline preload="auto" onClick={togglePlay} />
@@ -281,22 +275,25 @@ export default function Player({ channel }: Props) {
         <button className="player-action" onClick={() => seekBy(10)} title="Avançar 10 segundos"><SkipForward size={16} /></button>
         <button className="player-action" onClick={toggleMute} title={isMuted ? 'Ativar som' : 'Silenciar'}>{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
         <input className="player-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} onChange={(event) => setPlayerVolume(Number(event.target.value))} />
-        <span className="player-time">{Number.isFinite(duration) ? `${formatTime(currentTime)} / ${formatTime(duration)}` : 'AO VIVO'}</span>
-        <div className="player-control-spacer" />
-        <div className="player-settings-wrap">
-          <button className="player-action" onClick={() => setSettingsOpen((value) => !value)} title="Qualidade e configurações"><Settings2 size={17} /></button>
+        <span className="player-time">{formatTime(currentTime)}</span>
+        <span className="player-time">{Number.isFinite(duration) ? ` / ${formatTime(duration)}` : ''}</span>
+        <button className="player-action" onClick={goLive} title="Ir para o ao vivo"><Radio size={16} /></button>
+        <span className="player-control-spacer" />
+        {variants.length > 1 && <div className="player-settings-wrap">
+          <button className="player-action" onClick={() => setSettingsOpen((value) => !value)} title="Qualidade"><Settings2 size={17} /></button>
           {settingsOpen && <div className="player-settings-menu">
             <div className="player-settings-title">Qualidade do canal</div>
-            {variants.length > 0 ? variants.map((variant) => <button key={variant.id} className={variant.id === (activeVariant?.id ?? variants[0].id) ? 'quality-option active' : 'quality-option'} onClick={() => selectVariant(variant)}><span>{variant.quality}</span><small>{variant.name}</small></button>) : <div className="quality-empty">Este canal não possui outras qualidades cadastradas.</div>}
-            {hlsLevels.length > 1 && <><div className="player-settings-title">Qualidade do stream</div><select className="quality-select" value={hlsQuality} onChange={(event) => selectHlsQuality(Number(event.target.value))}><option value={-1}>Auto</option>{hlsLevels.map((level) => <option key={level.index} value={level.index}>{level.height ? `${level.height}p` : `${Math.round(level.bitrate / 1000)} kbps`}</option>)}</select></>}
+            {variants.map((variant) => <button key={variant.id} className={variant.id === (activeVariant?.id ?? channel.id) ? 'quality-option active' : 'quality-option'} onClick={() => selectVariant(variant)}><span>{variant.quality}</span><small>{variant.name}</small></button>)}
+            {hlsLevels.length > 1 && <>
+              <div className="player-settings-title">Qualidade HLS</div>
+              <button className={hlsQuality === -1 ? 'quality-option active' : 'quality-option'} onClick={() => selectHlsQuality(-1)}><span>Automático</span><small>Seleção adaptativa</small></button>
+              {hlsLevels.slice().sort((a, b) => b.height - a.height).map((level) => <button key={level.index} className={hlsQuality === level.index ? 'quality-option active' : 'quality-option'} onClick={() => selectHlsQuality(level.index)}><span>{level.height ? `${level.height}p` : 'Qualidade'}</span><small>{level.bitrate ? `${Math.round(level.bitrate / 1000)} kbps` : 'HLS'}</small></button>)}
+            </>}
           </div>}
-        </div>
-        <button className="player-action" onClick={goLive} title="Ir para o ao vivo"><Radio size={16} /></button>
-        <button className="player-action" onClick={() => void togglePiP()} title="Picture-in-Picture"><PictureInPicture2 size={16} /></button>
-        <button className="player-action" onClick={retry} title="Recarregar canal"><RefreshCw size={16} /></button>
+        </div>}
+        <button className="player-action" onClick={() => void togglePiP()} title="Picture-in-Picture"><PictureInPicture2 size={17} /></button>
         <button className="player-action" onClick={() => void toggleFullscreen()} title={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}>{isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
       </div>
-      <div className="player-control-footer"><span>{activeVariant?.quality || (usingFallback ? 'MPEG-TS fallback' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</span><span>{isPictureInPicture ? 'PiP ativo' : 'Espaço · M · F · ← →'}</span></div>
     </div>
   </div>
 }
