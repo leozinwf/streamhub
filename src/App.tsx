@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Upload, Play, Star, Tv, X } from 'lucide-react'
+import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle } from 'lucide-react'
 import Hls from 'hls.js'
+import mpegts from 'mpegts.js'
 import { parseM3U } from './lib/m3u'
 import { clearPlaylist, loadPlaylist, savePlaylist } from './lib/storage'
 import type { Channel, Playlist } from './types'
 
 function createPlaylist(name: string, channels: Channel[]): Playlist {
   return { id: crypto.randomUUID(), name, channels, importedAt: new Date().toISOString() }
+}
+
+function isMpegTs(url: string) {
+  const value = url.toLowerCase().split('?')[0]
+  return value.endsWith('.ts') || value.endsWith('.m2ts') || value.includes('/live/')
 }
 
 function Player({ channel }: { channel: Channel | null }) {
@@ -19,24 +25,38 @@ function Player({ channel }: { channel: Channel | null }) {
 
     setError(null)
     let hls: Hls | null = null
+    let tsPlayer: ReturnType<typeof mpegts.createPlayer> | null = null
 
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    if (isMpegTs(channel.url) && mpegts.getFeatureList().mseLivePlayback) {
+      tsPlayer = mpegts.createPlayer({
+        type: 'mpegts',
+        isLive: true,
+        url: channel.url,
+      })
+      tsPlayer.attachMediaElement(video)
+      tsPlayer.on(mpegts.Events.ERROR, () => {
+        setError('Não foi possível reproduzir o stream MPEG-TS. Verifique CORS, codec e disponibilidade da fonte.')
+      })
+      tsPlayer.load()
+      void tsPlayer.play().catch(() => undefined)
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = channel.url
       void video.play().catch(() => undefined)
     } else if (Hls.isSupported()) {
-      hls = new Hls({ enableWorker: true })
+      hls = new Hls({ enableWorker: true, lowLatencyMode: true })
       hls.loadSource(channel.url)
       hls.attachMedia(video)
       hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => undefined))
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) setError('Não foi possível reproduzir este stream no navegador. Verifique CORS e o suporte do formato.')
+        if (data.fatal) setError('Não foi possível reproduzir este HLS. Verifique CORS e a disponibilidade da fonte.')
       })
     } else {
-      setError('Este navegador não oferece suporte a HLS.')
+      setError('Este navegador não oferece suporte ao formato deste stream.')
     }
 
     return () => {
       hls?.destroy()
+      tsPlayer?.destroy()
       video.pause()
       video.removeAttribute('src')
       video.load()
@@ -48,6 +68,7 @@ function Player({ channel }: { channel: Channel | null }) {
   return (
     <div className="video-wrapper">
       <video ref={videoRef} controls playsInline />
+      <div className="now-playing"><span>{channel.name}</span><small>{isMpegTs(channel.url) ? 'MPEG-TS' : 'HLS'}</small></div>
       {error && <div className="video-error">{error}</div>}
     </div>
   )
@@ -59,6 +80,9 @@ export default function App() {
   const [selectedGroup, setSelectedGroup] = useState('Todos')
   const [query, setQuery] = useState('')
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null)
+  const [playlistUrl, setPlaylistUrl] = useState('')
+  const [urlLoading, setUrlLoading] = useState(false)
+  const [urlError, setUrlError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -85,6 +109,38 @@ export default function App() {
     setSelectedChannel(null)
   }
 
+  async function importUrl() {
+    const url = playlistUrl.trim()
+    if (!url) return
+    try {
+      new URL(url)
+    } catch {
+      setUrlError('Informe uma URL válida.')
+      return
+    }
+
+    setUrlLoading(true)
+    setUrlError(null)
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const content = await response.text()
+      const name = new URL(url).hostname || 'Playlist por URL'
+      const channels = parseM3U(content)
+      if (!channels.length) throw new Error('A URL não retornou uma playlist M3U válida.')
+      const next = createPlaylist(name, channels)
+      await savePlaylist(next)
+      setPlaylist(next)
+      setSelectedGroup('Todos')
+      setSelectedChannel(null)
+      setPlaylistUrl('')
+    } catch {
+      setUrlError('Não foi possível importar esta URL. O servidor pode bloquear requisições do navegador (CORS). Nesse caso, baixe o M3U e importe o arquivo.')
+    } finally {
+      setUrlLoading(false)
+    }
+  }
+
   function reset() {
     void clearPlaylist()
     setPlaylist(null)
@@ -101,10 +157,18 @@ export default function App() {
         <div className="brand-mark"><Tv size={26} /></div>
         <span className="eyebrow">STREAMHUB</span>
         <h1>Sua playlist.<br /><span>Seu player.</span></h1>
-        <p>Importe uma playlist M3U e organize seus canais em um único player web.</p>
-        <button className="primary-button" onClick={() => fileRef.current?.click()}><Upload size={18} /> Importar playlist M3U</button>
+        <p>Importe sua lista M3U HLS ou MPEG-TS e organize seus canais em um único player web.</p>
+        <button className="primary-button" onClick={() => fileRef.current?.click()}><Upload size={18} /> Importar arquivo M3U</button>
         <input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} />
-        <div className="privacy-note">Sua playlist é armazenada localmente neste navegador.</div>
+        <div className="url-import">
+          <div className="url-label"><Link size={15} /> Ou importar por URL</div>
+          <div className="url-row">
+            <input value={playlistUrl} onChange={(e) => { setPlaylistUrl(e.target.value); setUrlError(null) }} onKeyDown={(e) => { if (e.key === 'Enter') void importUrl() }} placeholder="https://servidor.exemplo/playlist.m3u" />
+            <button className="url-button" disabled={urlLoading || !playlistUrl.trim()} onClick={() => void importUrl()}>{urlLoading ? <LoaderCircle className="spin" size={17} /> : 'Importar'}</button>
+          </div>
+          {urlError && <div className="url-error">{urlError}</div>}
+        </div>
+        <div className="privacy-note">Sua playlist é armazenada localmente neste navegador. O StreamHub não hospeda os streams.</div>
       </section>
     </main>
   )
