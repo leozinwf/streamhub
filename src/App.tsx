@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle } from 'lucide-react'
+import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff } from 'lucide-react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import { parseM3U } from './lib/m3u'
@@ -12,7 +12,13 @@ function createPlaylist(name: string, channels: Channel[]): Playlist {
 
 function isMpegTs(url: string) {
   const value = url.toLowerCase().split('?')[0]
-  return value.endsWith('.ts') || value.endsWith('.m2ts') || value.includes('/live/')
+  return value.endsWith('.ts') || value.endsWith('.m2ts')
+}
+
+function normalizeServer(value: string) {
+  const raw = value.trim().replace(/\/+$/, '')
+  if (!/^https?:\/\//i.test(raw)) return raw ? `http://${raw}` : ''
+  return raw
 }
 
 function Player({ channel }: { channel: Channel | null }) {
@@ -28,19 +34,16 @@ function Player({ channel }: { channel: Channel | null }) {
     let tsPlayer: ReturnType<typeof mpegts.createPlayer> | null = null
 
     if (isMpegTs(channel.url) && mpegts.getFeatureList().mseLivePlayback) {
-      tsPlayer = mpegts.createPlayer({
-        type: 'mpegts',
-        isLive: true,
-        url: channel.url,
-      })
+      tsPlayer = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: channel.url })
       tsPlayer.attachMediaElement(video)
       tsPlayer.on(mpegts.Events.ERROR, () => {
-        setError('Não foi possível reproduzir o stream MPEG-TS. Verifique CORS, codec e disponibilidade da fonte.')
+        setError('Não foi possível reproduzir o MPEG-TS. Verifique CORS, codec e disponibilidade da fonte.')
       })
       tsPlayer.load()
       void tsPlayer.play().catch(() => undefined)
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = channel.url
+      video.addEventListener('error', () => setError('Não foi possível reproduzir este stream. Verifique a disponibilidade da fonte.'))
       void video.play().catch(() => undefined)
     } else if (Hls.isSupported()) {
       hls = new Hls({ enableWorker: true, lowLatencyMode: true })
@@ -48,7 +51,7 @@ function Player({ channel }: { channel: Channel | null }) {
       hls.attachMedia(video)
       hls.on(Hls.Events.MANIFEST_PARSED, () => void video.play().catch(() => undefined))
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) setError('Não foi possível reproduzir este HLS. Verifique CORS e a disponibilidade da fonte.')
+        if (data.fatal) setError('Não foi possível reproduzir este HLS. Verifique CORS, HTTPS e disponibilidade da fonte.')
       })
     } else {
       setError('Este navegador não oferece suporte ao formato deste stream.')
@@ -80,7 +83,12 @@ export default function App() {
   const [selectedGroup, setSelectedGroup] = useState('Todos')
   const [query, setQuery] = useState('')
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null)
+  const [mode, setMode] = useState<'m3u' | 'xtream'>('m3u')
   const [playlistUrl, setPlaylistUrl] = useState('')
+  const [server, setServer] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [urlLoading, setUrlLoading] = useState(false)
   const [urlError, setUrlError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -96,17 +104,18 @@ export default function App() {
   }) ?? [], [playlist, query, selectedGroup])
 
   async function importFile(file: File) {
-    importContent(file.name.replace(/\.[^.]+$/, '') || 'Minha playlist', await file.text())
+    await importContent(file.name.replace(/\.[^.]+$/, '') || 'Minha playlist', await file.text())
   }
 
-  function importContent(name: string, content: string) {
+  async function importContent(name: string, content: string) {
     const channels = parseM3U(content)
     if (!channels.length) return window.alert('Nenhum canal válido foi encontrado nessa playlist.')
     const next = createPlaylist(name, channels)
-    void savePlaylist(next)
+    await savePlaylist(next)
     setPlaylist(next)
     setSelectedGroup('Todos')
     setSelectedChannel(null)
+    setUrlError(null)
   }
 
   async function importUrl() {
@@ -122,20 +131,69 @@ export default function App() {
     setUrlLoading(true)
     setUrlError(null)
     try {
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const response = await fetch(`/api/playlist?url=${encodeURIComponent(url)}`)
+      if (!response.ok) throw new Error(await response.text())
       const content = await response.text()
       const name = new URL(url).hostname || 'Playlist por URL'
-      const channels = parseM3U(content)
-      if (!channels.length) throw new Error('A URL não retornou uma playlist M3U válida.')
-      const next = createPlaylist(name, channels)
+      await importContent(name, content)
+      setPlaylistUrl('')
+    } catch {
+      setUrlError('Não foi possível importar esta URL. Verifique o endereço e se o servidor da playlist está disponível.')
+    } finally {
+      setUrlLoading(false)
+    }
+  }
+
+  async function connectXtream() {
+    const normalizedServer = normalizeServer(server)
+    if (!normalizedServer || !username.trim() || !password.trim()) {
+      setUrlError('Informe servidor, usuário e senha.')
+      return
+    }
+
+    setUrlLoading(true)
+    setUrlError(null)
+    try {
+      const base = `/api/xtream?server=${encodeURIComponent(normalizedServer)}&username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password)}`
+      const authResponse = await fetch(base)
+      if (!authResponse.ok) {
+        const data = await authResponse.json().catch(() => null) as { error?: string } | null
+        throw new Error(data?.error || 'Não foi possível autenticar.')
+      }
+
+      const auth = await authResponse.json() as { user_info?: { auth?: number; status?: string } }
+      if (auth.user_info && (auth.user_info.auth === 0 || auth.user_info.status === 'Disabled')) {
+        throw new Error('A conta IPTV não está autorizada.')
+      }
+
+      const liveResponse = await fetch(`${base}&action=get_live_streams`)
+      if (!liveResponse.ok) throw new Error('Não foi possível carregar os canais.')
+      const liveStreams = await liveResponse.json() as Array<{
+        stream_id?: number | string
+        name?: string
+        category_name?: string
+        stream_icon?: string
+      }>
+
+      const channels: Channel[] = liveStreams
+        .filter((stream) => stream.stream_id != null && stream.name)
+        .map((stream, index) => ({
+          id: `xtream-${stream.stream_id}-${index}`,
+          name: stream.name || 'Canal sem nome',
+          url: `${normalizedServer}/live/${encodeURIComponent(username.trim())}/${encodeURIComponent(password)}/${stream.stream_id}.m3u8`,
+          group: stream.category_name || 'TV ao vivo',
+          logo: stream.stream_icon || undefined,
+        }))
+
+      if (!channels.length) throw new Error('A conta foi conectada, mas nenhum canal ao vivo foi encontrado.')
+
+      const next = createPlaylist(`${normalizedServer.replace(/^https?:\/\//, '')} — IPTV`, channels)
       await savePlaylist(next)
       setPlaylist(next)
       setSelectedGroup('Todos')
       setSelectedChannel(null)
-      setPlaylistUrl('')
-    } catch {
-      setUrlError('Não foi possível importar esta URL. O servidor pode bloquear requisições do navegador (CORS). Nesse caso, baixe o M3U e importe o arquivo.')
+    } catch (error) {
+      setUrlError(error instanceof Error ? error.message : 'Não foi possível conectar ao serviço IPTV.')
     } finally {
       setUrlLoading(false)
     }
@@ -157,18 +215,36 @@ export default function App() {
         <div className="brand-mark"><Tv size={26} /></div>
         <span className="eyebrow">STREAMHUB</span>
         <h1>Sua playlist.<br /><span>Seu player.</span></h1>
-        <p>Importe sua lista M3U HLS ou MPEG-TS e organize seus canais em um único player web.</p>
-        <button className="primary-button" onClick={() => fileRef.current?.click()}><Upload size={18} /> Importar arquivo M3U</button>
-        <input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} />
-        <div className="url-import">
-          <div className="url-label"><Link size={15} /> Ou importar por URL</div>
-          <div className="url-row">
-            <input value={playlistUrl} onChange={(e) => { setPlaylistUrl(e.target.value); setUrlError(null) }} onKeyDown={(e) => { if (e.key === 'Enter') void importUrl() }} placeholder="https://servidor.exemplo/playlist.m3u" />
-            <button className="url-button" disabled={urlLoading || !playlistUrl.trim()} onClick={() => void importUrl()}>{urlLoading ? <LoaderCircle className="spin" size={17} /> : 'Importar'}</button>
-          </div>
-          {urlError && <div className="url-error">{urlError}</div>}
+        <p>Conecte sua lista M3U ou seus acessos IPTV e organize seus canais em um único player web.</p>
+
+        <div className="connection-tabs">
+          <button className={mode === 'm3u' ? 'connection-tab active' : 'connection-tab'} onClick={() => { setMode('m3u'); setUrlError(null) }}><Link size={15} /> M3U</button>
+          <button className={mode === 'xtream' ? 'connection-tab active' : 'connection-tab'} onClick={() => { setMode('xtream'); setUrlError(null) }}><Server size={15} /> Acesso IPTV</button>
         </div>
-        <div className="privacy-note">Sua playlist é armazenada localmente neste navegador. O StreamHub não hospeda os streams.</div>
+
+        {mode === 'm3u' ? (
+          <>
+            <button className="primary-button" onClick={() => fileRef.current?.click()}><Upload size={18} /> Importar arquivo M3U</button>
+            <input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} />
+            <div className="url-import">
+              <div className="url-label"><Link size={15} /> Ou importar por URL</div>
+              <div className="url-row">
+                <input value={playlistUrl} onChange={(e) => { setPlaylistUrl(e.target.value); setUrlError(null) }} onKeyDown={(e) => { if (e.key === 'Enter') void importUrl() }} placeholder="http://servidor/playlist.m3u" />
+                <button className="url-button" disabled={urlLoading || !playlistUrl.trim()} onClick={() => void importUrl()}>{urlLoading ? <LoaderCircle className="spin" size={17} /> : 'Importar'}</button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="xtream-form">
+            <label>Servidor IPTV<input value={server} onChange={(e) => { setServer(e.target.value); setUrlError(null) }} placeholder="http://servidor:porta" /></label>
+            <label>Usuário<input value={username} onChange={(e) => { setUsername(e.target.value); setUrlError(null) }} placeholder="Seu usuário" autoComplete="username" /></label>
+            <label>Senha<div className="password-input"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => { setPassword(e.target.value); setUrlError(null) }} placeholder="Sua senha" autoComplete="current-password" /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>
+            <button className="primary-button" disabled={urlLoading} onClick={() => void connectXtream()}>{urlLoading ? <LoaderCircle className="spin" size={18} /> : <Server size={18} />} {urlLoading ? 'Conectando...' : 'Conectar IPTV'}</button>
+          </div>
+        )}
+
+        {urlError && <div className="url-error">{urlError}</div>}
+        <div className="privacy-note">As credenciais não são enviadas para um banco do StreamHub. A conexão é feita sob demanda e a playlist fica armazenada localmente neste navegador.</div>
       </section>
     </main>
   )
