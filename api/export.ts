@@ -12,7 +12,7 @@ function normalizeServer(value: string) {
   } catch { return null }
 }
 
-export default async function handler(req: Request): Promise<Response> {
+async function handle(req: Request): Promise<Response> {
   if (req.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
   const params = new URL(req.url).searchParams
   const server = normalizeServer(params.get('server') || '')
@@ -38,3 +38,6 @@ export default async function handler(req: Request): Promise<Response> {
   } catch { return new Response('Não foi possível exportar a lista completa.', { status: 502 }) }
   finally { clearTimeout(timeout) }
 }
+
+export default adaptHandler(handle)
+import { adaptHandler } from './adapter'

@@ -19,7 +19,7 @@ function text(value: string | null) {
   return value?.trim() ?? ''
 }
 
-export default async function handler(req: Request): Promise<Response> {
+async function handle(req: Request): Promise<Response> {
   if (req.method !== 'GET') {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
   }
@@ -71,3 +71,6 @@ export default async function handler(req: Request): Promise<Response> {
     clearTimeout(timeout)
   }
 }
+
+export default adaptHandler(handle)
+import { adaptHandler } from './adapter'

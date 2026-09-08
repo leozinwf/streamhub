@@ -48,7 +48,7 @@ function responseHeaders(source: Headers) {
   return headers
 }
 
-export default async function handler(req: Request): Promise<Response> {
+async function handle(req: Request): Promise<Response> {
   if (req.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
   const targetValue = new URL(req.url).searchParams.get('url')?.trim()
   if (!targetValue || !isAllowedUrl(targetValue)) return new Response('URL inválida ou destino não permitido.', { status: 400 })
@@ -104,3 +104,6 @@ export default async function handler(req: Request): Promise<Response> {
     clearTimeout(timeout)
   }
 }
+
+export default adaptHandler(handle)
+import { adaptHandler } from './adapter'
