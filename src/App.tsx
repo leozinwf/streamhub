@@ -5,6 +5,8 @@ import mpegts from 'mpegts.js'
 import { parseM3U } from './lib/m3u'
 import { clearPlaylist, loadPlaylist, savePlaylist } from './lib/storage'
 import type { Channel, Playlist } from './types'
+import ModernPlayer from './components/Player'
+import { collapseChannelVariants } from './lib/channelVariants'
 
 const RECENT_STORAGE_KEY = 'streamhub-recent-channels'
 const FAVORITES_STORAGE_KEY = 'streamhub-favorite-channels'
@@ -342,14 +344,14 @@ export default function App() {
   }, [])
 
   const groups = useMemo(() => playlist ? Array.from(new Set(playlist.channels.map((c) => c.group).filter(Boolean))).sort((a, b) => a.localeCompare(b)) : [], [playlist])
-  const filteredChannels = useMemo(() => playlist?.channels.filter((channel) => {
+  const filteredChannels = useMemo(() => collapseChannelVariants(playlist?.channels ?? []).filter((channel) => {
     const groupMatch = selectedGroup === 'Todos' || selectedGroup === 'Recentes' || selectedGroup === 'Favoritos' || channel.group === selectedGroup
     return groupMatch && channel.name.toLowerCase().includes(query.toLowerCase())
-  }) ?? [], [playlist, query, selectedGroup])
+  }), [playlist, query, selectedGroup])
   const channels = selectedGroup === 'Recentes'
-    ? recentChannels.filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
+    ? collapseChannelVariants(recentChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
     : selectedGroup === 'Favoritos'
-      ? favoriteChannels.filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
+      ? collapseChannelVariants(favoriteChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
       : filteredChannels
 
   function addRecent(channel: Channel) {
@@ -458,7 +460,7 @@ export default function App() {
     <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir menu"><Menu size={21} /></button><div className="brand"><Tv size={21} /><span>StreamHub</span></div><div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" /></div><button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button><button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
     <div className="layout">
       <main className="content">
-        <section className="watch-area"><div className="player-card"><div className="player-screen"><Player channel={selectedChannel} /></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div><button className="ghost-button" onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}><Star size={19} fill={favorite ? 'currentColor' : 'none'} /></button></div>}</div></section>
+        <section className="watch-area"><div className="player-card"><div className="player-screen"><ModernPlayer channel={selectedChannel} /></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div><button className="ghost-button" onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}><Star size={19} fill={favorite ? 'currentColor' : 'none'} /></button></div>}</div></section>
         <div className="category-strip"><button className={selectedGroup === 'Todos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Todos')}>Todos</button><button className={selectedGroup === 'Recentes' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Recentes')}><Clock3 size={14} /> Recentes</button><button className={selectedGroup === 'Favoritos' ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup('Favoritos')}><Star size={14} /> Favoritos</button>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'category-chip active' : 'category-chip'} onClick={() => selectGroup(group)}>{group}</button>)}</div>
         <section className="channels-section"><div className="section-heading"><div><span className="eyebrow">BIBLIOTECA</span><h2>{selectedGroup === 'Todos' ? 'Todos os canais' : selectedGroup}</h2></div><span className="count">{channels.length} canais</span></div>{channels.length ? <div className="channel-grid">{channels.map((channel) => <button key={channel.id} className={selectedChannel?.id === channel.id ? 'channel-card selected' : 'channel-card'} onClick={() => selectChannel(channel)}><div className="channel-thumb">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={42} />}<span className="live-badge">AO VIVO</span><span className="thumb-play"><Play size={15} fill="currentColor" /></span></div><div className="channel-info"><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={17} />}</div><div><strong>{channel.name}</strong><span>{channel.group} · transmissão ao vivo</span></div></div></button>)}</div> : <div className="empty-list">Nenhum canal encontrado.</div>}</section>
       </main>
