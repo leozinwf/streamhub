@@ -1,4 +1,4 @@
-const TIMEOUT_MS = 20000
+const TIMEOUT_MS = 30000
 const MAX_MANIFEST_BYTES = 5 * 1024 * 1024
 
 function isAllowedUrl(value: string) {
@@ -24,8 +24,11 @@ function rewriteManifest(content: string, requestUrl: string, baseUrl: URL) {
     .split(/\r?\n/)
     .map((line) => {
       const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) {
-        return line.replace(/URI="([^"]+)"/g, (_match, value: string) => {
+      if (!trimmed) return line
+
+      // HLS uses URI= for encryption keys, maps, subtitles and other auxiliary resources.
+      if (trimmed.startsWith('#')) {
+        return line.replace(/URI="([^"]+)"/gi, (_match, value: string) => {
           try {
             return `URI="${proxiedUrl(new URL(value, baseUrl), requestUrl)}"`
           } catch {
@@ -35,6 +38,7 @@ function rewriteManifest(content: string, requestUrl: string, baseUrl: URL) {
       }
 
       try {
+        // Every playlist/segment reference goes back through the same proxy.
         return proxiedUrl(new URL(trimmed, baseUrl), requestUrl)
       } catch {
         return line
@@ -61,8 +65,9 @@ export default async function handler(req: Request): Promise<Response> {
     const upstream = await fetch(target, {
       signal: controller.signal,
       headers: {
-        Accept: '*/*',
-        'User-Agent': 'Mozilla/5.0 StreamHub/1.0',
+        Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t, */*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 StreamHub/1.0',
+        Connection: 'keep-alive',
       },
       redirect: 'follow',
     })
@@ -72,7 +77,8 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     const contentType = upstream.headers.get('content-type') || ''
-    const isManifest = contentType.includes('mpegurl') || /\.m3u8(?:$|\?)/i.test(target.pathname + target.search)
+    const finalUrl = new URL(upstream.url || target.toString())
+    const isManifest = contentType.toLowerCase().includes('mpegurl') || /\.m3u8(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search)
 
     if (isManifest) {
       const contentLength = Number(upstream.headers.get('content-length') ?? 0)
@@ -85,24 +91,30 @@ export default async function handler(req: Request): Promise<Response> {
         return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
       }
 
-      return new Response(rewriteManifest(content, req.url, target), {
+      // Use the final redirected URL as the base. This is important when the provider
+      // redirects the request to a CDN with a different host/path.
+      const rewritten = rewriteManifest(content, req.url, finalUrl)
+
+      return new Response(rewritten, {
         status: 200,
         headers: {
           'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8',
-          'Cache-Control': 'no-store',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          Pragma: 'no-cache',
           'Access-Control-Allow-Origin': '*',
         },
       })
     }
 
     const headers = new Headers()
-    const passthrough = ['content-type', 'content-length', 'content-range', 'accept-ranges']
+    const passthrough = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']
     for (const key of passthrough) {
       const value = upstream.headers.get(key)
       if (value) headers.set(key, value)
     }
     headers.set('Cache-Control', 'no-store')
     headers.set('Access-Control-Allow-Origin', '*')
+    headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified')
 
     return new Response(upstream.body, { status: upstream.status, headers })
   } catch (error) {
