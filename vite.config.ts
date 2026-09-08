@@ -51,6 +51,16 @@ function localApi(): Plugin {
         })
       }
     },
+    transform(code, id) {
+      if (!id.endsWith('/src/components/Player.tsx')) return null
+
+      const fixed = code.replace(
+        'function uniqueVariants(channel: Channel): ChannelVariant[] {\n  if (!channel.variants?.length) return []',
+        'function uniqueVariants(channel: Channel | null): ChannelVariant[] {\n  if (!channel?.variants?.length) return []',
+      )
+
+      return fixed === code ? null : { code: fixed, map: null }
+    },
   }
 }
 
