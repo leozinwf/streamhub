@@ -49,6 +49,44 @@ function localApi(): Plugin {
         })
       }
     },
+    transform(code, id) {
+      if (!id.endsWith('/src/components/Player.tsx')) return null
+      let fixed = code
+      fixed = fixed.replace(
+        "  const [hlsQuality, setHlsQuality] = useState(-1)\n",
+        "  const [hlsQuality, setHlsQuality] = useState(-1)\n  const [playbackRate, setPlaybackRate] = useState(1)\n",
+      )
+      fixed = fixed.replace(
+        "    setSettingsOpen(false)\n    showControls()",
+        "    setSettingsOpen(false)\n    setPlaybackRate(1)\n    showControls()",
+      )
+      fixed = fixed.replace(
+        "  const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }\n",
+        "  const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }\n  const changePlaybackRate = () => { const video = videoRef.current; if (!video) return; const rates = [0.5, 0.75, 1, 1.25, 1.5, 2]; const index = Math.max(0, rates.indexOf(Number(video.playbackRate.toFixed(2)))); const next = rates[(index + 1) % rates.length]; video.playbackRate = next; setPlaybackRate(next) }\n",
+      )
+      fixed = fixed.replace(
+        "    {!isPlaying && !error && <div className=\"player-center-play\" onClick={handleVideoClick}><Play size={28} fill=\"currentColor\" /></div>}\n",
+        "",
+      )
+      fixed = fixed.replace(
+        "        <button className=\"player-action\" onClick={() => seekBy(-10)} title=\"Voltar 10 segundos\"><SkipBack size={16} /></button>\n",
+        "        <button className=\"player-action\" onClick={() => { togglePlay(); scheduleHideControls() }} title={isPlaying ? 'Pausar' : 'Reproduzir'}>{isPlaying ? <Pause size={17} /> : <Play size={17} fill=\"currentColor\" />}</button>\n        <button className=\"player-live-action\" onClick={goLive} title=\"Ir para o ao vivo\"><Radio size={14} /><span>LIVE</span></button>\n        <button className=\"player-speed-action\" onClick={changePlaybackRate} title=\"Velocidade de reprodução\">{playbackRate}x</button>\n        <button className=\"player-action\" onClick={() => seekBy(-10)} title=\"Voltar 10 segundos\"><SkipBack size={16} /></button>\n",
+      )
+      fixed = fixed.replace(
+        "        <button className=\"player-action\" onClick={togglePlay} title={isPlaying ? 'Pausar' : 'Reproduzir'}>{isPlaying ? <Pause size={17} /> : <Play size={17} fill=\"currentColor\" />}</button>\n",
+        "",
+      )
+      fixed = fixed.replace(
+        "        <input className=\"player-volume\" aria-label=\"Volume\" type=\"range\" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} onChange={(event) => setPlayerVolume(Number(event.target.value))} />\n",
+        "        <input className=\"player-volume\" aria-label=\"Volume\" type=\"range\" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} style={{ background: `linear-gradient(90deg, #4a8cff 0%, #4a8cff ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,.2) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,.2) 100%)` }} onPointerDown={showControls} onChange={(event) => setPlayerVolume(Number(event.target.value))} />\n",
+      )
+      fixed = fixed.replace(
+        "        <button className=\"player-action\" onClick={goLive} title=\"Ir para o ao vivo\"><Radio size={16} /></button>\n",
+        "",
+      )
+      fixed += "\n"
+      return fixed === code ? null : { code: fixed, map: null }
+    },
   }
 }
 
