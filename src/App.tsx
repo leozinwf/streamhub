@@ -45,6 +45,18 @@ function writeStoredChannels(key: string, channels: Channel[], limit?: number) {
   try { localStorage.setItem(key, JSON.stringify(limit ? channels.slice(0, limit) : channels)) } catch { /* ignore storage errors */ }
 }
 
+function canonicalChannelKey(channel: Channel) {
+  const base = channel.name
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\b(?:full\s*hd|fhd|uhd|4k|2160p|1080p|720p|576p|480p|sd|hd|h[ ._-]?265|265|hevc)\b/gi, ' ')
+    .replace(/[|/_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase('pt-BR')
+  return `${channel.group.toLocaleLowerCase('pt-BR')}::${base}`
+}
+
 function xtreamTsFallback(url: string) {
   if (!/\/live\//i.test(url) || !/\.m3u8(?:$|\?)/i.test(url)) return null
   return url.replace(/\.m3u8(?=$|\?)/i, '.ts')
@@ -348,15 +360,17 @@ export default function App() {
     const groupMatch = selectedGroup === 'Todos' || selectedGroup === 'Recentes' || selectedGroup === 'Favoritos' || channel.group === selectedGroup
     return groupMatch && channel.name.toLowerCase().includes(query.toLowerCase())
   }), [playlist, query, selectedGroup])
+  const favoriteKeys = useMemo(() => new Set(favoriteChannels.map(canonicalChannelKey)), [favoriteChannels])
+  const favoritePlaylistChannels = useMemo(() => playlist?.channels.filter((channel) => favoriteKeys.has(canonicalChannelKey(channel))) ?? [], [playlist, favoriteKeys])
   const channels = selectedGroup === 'Recentes'
     ? collapseChannelVariants(recentChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
     : selectedGroup === 'Favoritos'
-      ? collapseChannelVariants(favoriteChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
+      ? collapseChannelVariants(favoritePlaylistChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))
       : filteredChannels
 
   function addRecent(channel: Channel) {
     setRecentChannels((current) => {
-      const next = [channel, ...current.filter((item) => item.id !== channel.id)].slice(0, MAX_RECENT_CHANNELS)
+      const next = [channel, ...current.filter((item) => canonicalChannelKey(item) !== canonicalChannelKey(channel))].slice(0, MAX_RECENT_CHANNELS)
       writeStoredChannels(RECENT_STORAGE_KEY, next, MAX_RECENT_CHANNELS)
       return next
     })
@@ -370,9 +384,10 @@ export default function App() {
   }
 
   function toggleFavorite(channel: Channel) {
+    const key = canonicalChannelKey(channel)
     setFavoriteChannels((current) => {
-      const exists = current.some((item) => item.id === channel.id)
-      const next = exists ? current.filter((item) => item.id !== channel.id) : [channel, ...current]
+      const exists = current.some((item) => canonicalChannelKey(item) === key)
+      const next = exists ? current.filter((item) => canonicalChannelKey(item) !== key) : [channel, ...current]
       writeStoredChannels(FAVORITES_STORAGE_KEY, next)
       return next
     })
@@ -454,10 +469,10 @@ export default function App() {
     {urlError && <div className="url-error">{urlError}</div>}<div className="privacy-note">A conexão é feita sob demanda. Os dados não são enviados para um banco do StreamHub.</div>
   </section></main>
 
-  const favorite = selectedChannel ? favoriteChannels.some((item) => item.id === selectedChannel.id) : false
+  const favorite = selectedChannel ? favoriteKeys.has(canonicalChannelKey(selectedChannel)) : false
 
   return <div className="app-shell">
-    <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir menu"><Menu size={21} /></button><div className="brand"><Tv size={21} /><span>StreamHub</span></div><div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" /></div><button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button><button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
+    <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir menu"><Menu size={21} /></button><div className="brand"><Tv size={21} /><span>StreamHub</span></div><div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" />{query && <button className="search-clear" type="button" aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={15} /></button>}</div><button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button><button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
     <div className="layout">
       <main className="content">
         <section className="watch-area"><div className="player-card"><div className="player-screen"><ModernPlayer channel={selectedChannel} /></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div><button className="ghost-button" onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}><Star size={19} fill={favorite ? 'currentColor' : 'none'} /></button></div>}</div></section>
