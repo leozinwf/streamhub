@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff, Menu, Home, Radio, RefreshCw, Clock3, Trash2, Theater, List, LayoutGrid, Film, Clapperboard, ChevronLeft, CalendarDays, Download } from 'lucide-react'
+import { Search, Upload, Play, Star, Tv, X, Link, LoaderCircle, Server, Eye, EyeOff, Menu, Home, Radio, RefreshCw, Clock3, Trash2, Theater, List, LayoutGrid, Film, Clapperboard, ChevronLeft, CalendarDays, Download, Settings, LogOut } from 'lucide-react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import { parseM3U } from './lib/m3u'
@@ -239,6 +239,7 @@ export default function App() {
   const [seriesLoading, setSeriesLoading] = useState(false)
   const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([])
   const [epgLoading, setEpgLoading] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null)
   const [recentChannels, setRecentChannels] = useState<Channel[]>([])
@@ -382,6 +383,14 @@ export default function App() {
   function toggleTheater() { setTheaterMode((current) => { const next = !current; try { localStorage.setItem(THEATER_STORAGE_KEY, next ? '1' : '0') } catch {}; return next }) }
   function exportM3u() {
     if (!playlist?.channels.length) return
+    const connection = playlist.xtream || inferXtreamConnection(playlist.channels)
+    if (connection) {
+      const link = document.createElement('a')
+      link.href = `/api/export?server=${encodeURIComponent(connection.server)}&username=${encodeURIComponent(connection.username)}&password=${encodeURIComponent(connection.password)}`
+      link.download = 'streamhub-completo.m3u'
+      link.click()
+      return
+    }
     const escapeAttribute = (value: string) => value.replace(/"/g, "'")
     const lines = ['#EXTM3U', ...playlist.channels.flatMap((channel) => {
       const attributes = [
@@ -426,11 +435,17 @@ export default function App() {
     } catch (cause) { setUrlError(cause instanceof Error ? cause.message : 'Não foi possível conectar ao serviço IPTV.') } finally { setUrlLoading(false) }
   }
   function reset() { void clearPlaylist(); clearRecents(); setFavoriteChannels([]); try { localStorage.removeItem(FAVORITES_STORAGE_KEY) } catch {}; setPlaylist(null); setSelectedChannel(null); setSelectedGroup('Todos'); setQuery('') }
+  function logout() { if (window.confirm('Sair e remover a lista salva deste aparelho?')) reset() }
 
   if (!ready) return <div className="loading-screen">Carregando StreamHub...</div>
   if (!playlist) return <main className="landing"><section className="import-card"><div className="brand-mark"><Tv size={26} /></div><span className="eyebrow">STREAMHUB</span><h1>Sua playlist.<br /><span>Seu player.</span></h1><p>Conecte sua lista M3U ou seus acessos IPTV e organize seus canais em um único player web.</p><div className="connection-tabs"><button className={mode === 'm3u' ? 'connection-tab active' : 'connection-tab'} onClick={() => { setMode('m3u'); setUrlError(null) }}><Link size={15} /> M3U</button><button className={mode === 'xtream' ? 'connection-tab active' : 'connection-tab'} onClick={() => { setMode('xtream'); setUrlError(null) }}><Server size={15} /> Acesso IPTV</button></div>{mode === 'm3u' ? <><button className="primary-button" onClick={() => fileRef.current?.click()}><Upload size={18} /> Importar arquivo M3U</button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /><div className="url-import"><div className="url-label"><Link size={15} /> Ou importar por URL</div><div className="url-row"><input value={playlistUrl} onChange={(e) => { setPlaylistUrl(e.target.value); setUrlError(null) }} onKeyDown={(e) => { if (e.key === 'Enter') void importUrl() }} placeholder="http://servidor/playlist.m3u" /><button className="url-button" disabled={urlLoading || !playlistUrl.trim()} onClick={() => void importUrl()}>{urlLoading ? <LoaderCircle className="spin" size={17} /> : 'Importar'}</button></div></div></> : <div className="xtream-form"><label>Servidor IPTV<input value={server} onChange={(e) => { setServer(e.target.value); setUrlError(null) }} placeholder="http://servidor:porta" /></label><label>Usuário<input value={username} onChange={(e) => { setUsername(e.target.value); setUrlError(null) }} placeholder="Seu usuário" autoComplete="username" /></label><label>Senha<div className="password-input"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => { setPassword(e.target.value); setUrlError(null) }} placeholder="Sua senha" autoComplete="current-password" /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label><button className="primary-button" disabled={urlLoading} onClick={() => void connectXtream()}>{urlLoading ? <LoaderCircle className="spin" size={18} /> : <Server size={18} />} {urlLoading ? 'Conectando...' : 'Conectar IPTV'}</button></div>}{urlError && <div className="url-error">{urlError}</div>}<div className="privacy-note">A conexão é feita sob demanda. Os dados não são enviados para um banco do StreamHub.</div></section></main>
 
-  if (contentMode === 'home') return <main className="library-gateway"><div className="gateway-brand"><Tv size={23} /><strong>StreamHub</strong></div><section className="home-selector"><span className="eyebrow">O QUE VOCÊ QUER ASSISTIR?</span><h1>Escolha uma biblioteca</h1><div><button onClick={() => selectContentMode('live')}><Radio size={28} /><strong>TV ao vivo</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais</span></button><button onClick={() => selectContentMode('movie')} disabled={!playlist.media?.some((item) => item.kind === 'movie')}><Film size={28} /><strong>Filmes</strong><span>{playlist.media?.filter((item) => item.kind === 'movie').length || 0} títulos</span></button><button onClick={() => selectContentMode('series')} disabled={!playlist.media?.some((item) => item.kind === 'series')}><Clapperboard size={28} /><strong>Séries</strong><span>{playlist.media?.filter((item) => item.kind === 'series').length || 0} séries</span></button></div></section></main>
+  if (contentMode === 'home') return <main className="library-gateway">
+    <div className="gateway-brand"><Tv size={23} /><strong>StreamHub</strong></div>
+    <div className="gateway-actions"><button onClick={exportM3u} title="Exportar lista completa"><Download size={18} /><span>Exportar</span></button><button onClick={() => setSettingsOpen(true)} title="Informações da lista"><Settings size={18} /><span>Configurações</span></button><button className="logout-button" onClick={logout} title="Sair"><LogOut size={18} /><span>Sair</span></button></div>
+    <section className="home-selector"><span className="eyebrow">O QUE VOCÊ QUER ASSISTIR?</span><h1>Escolha uma biblioteca</h1><div><button onClick={() => selectContentMode('live')}><Radio size={28} /><strong>TV ao vivo</strong><span>{playlist.channels.length.toLocaleString('pt-BR')} canais</span></button><button onClick={() => selectContentMode('movie')} disabled={!playlist.media?.some((item) => item.kind === 'movie')}><Film size={28} /><strong>Filmes</strong><span>{playlist.media?.filter((item) => item.kind === 'movie').length || 0} títulos</span></button><button onClick={() => selectContentMode('series')} disabled={!playlist.media?.some((item) => item.kind === 'series')}><Clapperboard size={28} /><strong>Séries</strong><span>{playlist.media?.filter((item) => item.kind === 'series').length || 0} séries</span></button></div></section>
+    {settingsOpen && <div className="settings-overlay" role="presentation" onMouseDown={() => setSettingsOpen(false)}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}><button className="settings-close" onClick={() => setSettingsOpen(false)} aria-label="Fechar"><X size={18} /></button><span className="eyebrow">INFORMAÇÕES DA LISTA</span><h2 id="settings-title">{playlist.name}</h2><dl><div><dt>Canais ao vivo</dt><dd>{playlist.channels.length.toLocaleString('pt-BR')}</dd></div><div><dt>Filmes</dt><dd>{playlist.media?.filter((item) => item.kind === 'movie').length.toLocaleString('pt-BR') || 0}</dd></div><div><dt>Séries</dt><dd>{playlist.media?.filter((item) => item.kind === 'series').length.toLocaleString('pt-BR') || 0}</dd></div><div><dt>Categorias</dt><dd>{groups.length.toLocaleString('pt-BR')}</dd></div><div><dt>Adicionada em</dt><dd>{new Date(playlist.importedAt).toLocaleDateString('pt-BR')}</dd></div><div><dt>Servidor</dt><dd>{playlist.xtream?.server ? new URL(playlist.xtream.server).host : 'Lista M3U'}</dd></div></dl><button className="settings-export" onClick={exportM3u}><Download size={17} /> Exportar lista completa</button></section></div>}
+  </main>
 
   const favorite = selectedChannel ? favoriteKeys.has(canonicalChannelKey(selectedChannel)) : false
   return <div className={`app-shell ${theaterMode ? 'theater-mode' : ''}`}>

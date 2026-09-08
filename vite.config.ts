@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import playlistHandler from './api/playlist'
 import xtreamHandler from './api/xtream'
 import streamHandler from './api/stream'
+import exportHandler from './api/export'
 
 async function sendResponse(response: Response, res: any, stream = false) {
   res.statusCode = response.status
@@ -30,6 +31,7 @@ function localApi(): Plugin {
         '/api/playlist': playlistHandler,
         '/api/xtream': xtreamHandler,
         '/api/stream': streamHandler,
+        '/api/export': exportHandler,
       }
       for (const [route, handler] of Object.entries(handlers)) {
         server.middlewares.use(route, async (req: any, res: any, next: any) => {
@@ -41,7 +43,7 @@ function localApi(): Plugin {
             }
             const request = new Request(`http://localhost:5173${req.url ?? ''}`, { method: req.method ?? 'GET', headers })
             const response = await handler(request)
-            await sendResponse(response, res, route === '/api/stream')
+            await sendResponse(response, res, route === '/api/stream' || route === '/api/export')
           } catch (error) {
             console.error(`[StreamHub API] ${req.method ?? 'GET'} ${route} failed`, error)
             next(error)
