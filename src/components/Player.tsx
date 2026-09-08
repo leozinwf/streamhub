@@ -32,6 +32,17 @@ function uniqueVariants(channel: Channel | null): ChannelVariant[] {
   return Array.from(new Map(channel.variants.map((variant) => [variant.id, variant])).values())
 }
 
+function safePlay(video: HTMLVideoElement, audible = false) {
+  if (audible) video.muted = false
+  void video.play().catch((error: unknown) => {
+    if (error instanceof DOMException && error.name === 'AbortError') return
+    if (audible) {
+      video.muted = true
+      void video.play().catch(() => undefined)
+    }
+  })
+}
+
 type Props = {
   channel: Channel | null
 }
@@ -41,18 +52,20 @@ export default function Player({ channel }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const hlsRef = useRef<Hls | null>(null)
   const tsRef = useRef<ReturnType<typeof mpegts.createPlayer> | null>(null)
+  const controlsHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
   const [usingFallback, setUsingFallback] = useState(false)
   const [variantId, setVariantId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [isMuted, setIsMuted] = useState(true)
+  const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(1)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(Number.NaN)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isPictureInPicture, setIsPictureInPicture] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [controlsVisible, setControlsVisible] = useState(true)
   const [hlsLevels, setHlsLevels] = useState<Array<{ index: number; height: number; bitrate: number }>>([])
   const [hlsQuality, setHlsQuality] = useState(-1)
 
@@ -60,10 +73,24 @@ export default function Player({ channel }: Props) {
   const activeVariant = variants.find((variant) => variant.id === variantId) ?? null
   const activeUrl = activeVariant?.url ?? channel?.url ?? ''
 
+  const showControls = () => {
+    setControlsVisible(true)
+    if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+  }
+
+  const scheduleHideControls = () => {
+    if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+    controlsHideTimerRef.current = setTimeout(() => {
+      setControlsVisible(false)
+      setSettingsOpen(false)
+    }, 1500)
+  }
+
   useEffect(() => {
     setVariantId(null)
     setUsingFallback(false)
     setSettingsOpen(false)
+    showControls()
   }, [channel?.id])
 
   useEffect(() => {
@@ -99,7 +126,7 @@ export default function Player({ channel }: Props) {
       if (target?.tagName === 'INPUT' || target?.tagName === 'SELECT' || target?.tagName === 'TEXTAREA') return
       const video = videoRef.current
       if (!video) return
-      if (event.code === 'Space') { event.preventDefault(); void (video.paused ? video.play() : video.pause()) }
+      if (event.code === 'Space') { event.preventDefault(); void (video.paused ? safePlay(video) : video.pause()) }
       else if (event.key.toLowerCase() === 'm') { event.preventDefault(); video.muted = !video.muted }
       else if (event.key.toLowerCase() === 'f') { event.preventDefault(); void toggleFullscreen() }
       else if (event.key === 'ArrowLeft') { event.preventDefault(); seekBy(-10) }
@@ -149,7 +176,7 @@ export default function Player({ channel }: Props) {
     setError(null)
     setHlsLevels([])
     setHlsQuality(-1)
-    video.muted = true
+    video.muted = false
     video.volume = 1
 
     const startTs = (url: string) => {
@@ -169,7 +196,7 @@ export default function Player({ channel }: Props) {
         player.on(mpegts.Events.ERROR, (_type, detail) => fail(`Falha MPEG-TS: ${String(detail || 'erro desconhecido')}`))
         player.load()
         startWatchdog()
-        void player.play().catch(() => undefined)
+        safePlay(video, true)
         return true
       } catch (cause) {
         fail(`Não foi possível iniciar MPEG-TS: ${String(cause)}`)
@@ -206,7 +233,7 @@ export default function Player({ channel }: Props) {
         if (disposed) return
         setHlsLevels(hls.levels.map((level, index) => ({ index, height: level.height || 0, bitrate: level.bitrate || 0 })))
         startWatchdog()
-        void video.play().catch(() => undefined)
+        safePlay(video, true)
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (disposed || !data.fatal) return
@@ -232,7 +259,7 @@ export default function Player({ channel }: Props) {
       })
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = proxyStreamUrl(usingFallback ? xtreamTsFallback(activeUrl) || activeUrl : activeUrl)
-      const onLoaded = () => { startWatchdog(); void video.play().catch(() => undefined) }
+      const onLoaded = () => { startWatchdog(); safePlay(video, true) }
       const onError = () => fail('O player nativo não conseguiu carregar o HLS.')
       video.addEventListener('loadedmetadata', onLoaded)
       video.addEventListener('error', onError)
@@ -249,7 +276,7 @@ export default function Player({ channel }: Props) {
     }
   }, [channel, activeUrl, retryKey, usingFallback])
 
-  const togglePlay = () => { const video = videoRef.current; if (!video) return; void (video.paused ? video.play() : video.pause()) }
+  const togglePlay = () => { const video = videoRef.current; if (!video) return; if (video.paused) safePlay(video) ; else video.pause() }
   const toggleMute = () => { const video = videoRef.current; if (!video) return; video.muted = !video.muted }
   const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false }
   const seekBy = (delta: number) => { const video = videoRef.current; if (!video || !Number.isFinite(video.duration)) return; video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + delta)) }
@@ -259,18 +286,19 @@ export default function Player({ channel }: Props) {
   const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
   const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
   const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }
+  const handleVideoClick = () => { togglePlay(); scheduleHideControls() }
 
   if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
 
-  return <div ref={rootRef} className="video-wrapper player-modern" onDoubleClick={() => void toggleFullscreen()}>
-    <video ref={videoRef} controls={false} playsInline preload="auto" onClick={togglePlay} />
-    {!isPlaying && !error && <div className="player-center-play" onClick={togglePlay}><Play size={28} fill="currentColor" /></div>}
+  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
+    <video ref={videoRef} controls={false} playsInline preload="auto" onClick={handleVideoClick} />
+    {!isPlaying && !error && <div className="player-center-play" onClick={handleVideoClick}><Play size={28} fill="currentColor" /></div>}
     <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
     {error && <div className="video-error"><span>{error}</span><button onClick={retry}><RefreshCw size={14} /> Tentar novamente</button></div>}
-    <div className="player-custom-controls" onDoubleClick={(event) => event.stopPropagation()}>
+    <div className="player-custom-controls" onMouseEnter={showControls} onDoubleClick={(event) => event.stopPropagation()}>
       {Number.isFinite(duration) && duration > 0 && <input className="player-seek" aria-label="Posição" type="range" min={0} max={duration} step={0.1} value={Math.min(currentTime, duration)} onChange={(event) => { const video = videoRef.current; if (video) video.currentTime = Number(event.target.value) }} />}
       <div className="player-control-row">
-        <button className="player-action" onClick={togglePlay} title={isPlaying ? 'Pausar' : 'Reproduzir'}>{isPlaying ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</button>
+        <button className="player-action" onClick={togglePlay} title={isPlaying ? 'Pausar' : 'Reproduzir'}>{isPlaying ? <Pause size={17} /> : <Play size={17} fill="currentColor" />}</button>
         <button className="player-action" onClick={() => seekBy(-10)} title="Voltar 10 segundos"><SkipBack size={16} /></button>
         <button className="player-action" onClick={() => seekBy(10)} title="Avançar 10 segundos"><SkipForward size={16} /></button>
         <button className="player-action" onClick={toggleMute} title={isMuted ? 'Ativar som' : 'Silenciar'}>{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
@@ -280,7 +308,7 @@ export default function Player({ channel }: Props) {
         <button className="player-action" onClick={goLive} title="Ir para o ao vivo"><Radio size={16} /></button>
         <span className="player-control-spacer" />
         {variants.length > 1 && <div className="player-settings-wrap">
-          <button className="player-action" onClick={() => setSettingsOpen((value) => !value)} title="Qualidade"><Settings2 size={17} /></button>
+          <button className="player-action" onClick={() => { setSettingsOpen((value) => !value); showControls() }} title="Qualidade"><Settings2 size={17} /></button>
           {settingsOpen && <div className="player-settings-menu">
             <div className="player-settings-title">Qualidade do canal</div>
             {variants.map((variant) => <button key={variant.id} className={variant.id === (activeVariant?.id ?? channel.id) ? 'quality-option active' : 'quality-option'} onClick={() => selectVariant(variant)}><span>{variant.quality}</span><small>{variant.name}</small></button>)}
