@@ -45,7 +45,7 @@ function rewriteManifest(content: string, requestUrl: string, baseUrl: URL) {
     .join('\n')
 }
 
-function copySafeResponseHeaders(source: Headers) {
+function responseHeaders(source: Headers) {
   const headers = new Headers()
   for (const key of ['content-type', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
     const value = source.get(key)
@@ -59,30 +59,23 @@ function copySafeResponseHeaders(source: Headers) {
 }
 
 export default async function handler(req: Request): Promise<Response> {
-  if (req.method !== 'GET') {
-    return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
-  }
+  if (req.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
 
   const targetValue = new URL(req.url).searchParams.get('url')?.trim()
-  if (!targetValue || !isAllowedUrl(targetValue)) {
-    return new Response('URL inválida ou destino não permitido.', { status: 400 })
-  }
+  if (!targetValue || !isAllowedUrl(targetValue)) return new Response('URL inválida ou destino não permitido.', { status: 400 })
 
   const target = new URL(targetValue)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS)
 
   try {
+    const requestRange = req.headers.get('range')
     const upstreamHeaders: Record<string, string> = {
-      Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t, video/mp2t; codecs="avc1.42E01E,mp4a.40.2", */*',
+      Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t, */*',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 StreamHub/1.0',
       'Accept-Encoding': 'identity',
     }
-
-    // HLS can use byte ranges. Preserve the browser's Range request so the
-    // upstream CDN receives the same request semantics.
-    const range = req.headers.get('range')
-    if (range) upstreamHeaders.Range = range
+    if (requestRange) upstreamHeaders.Range = requestRange
 
     const upstream = await fetch(target, {
       signal: controller.signal,
@@ -90,25 +83,18 @@ export default async function handler(req: Request): Promise<Response> {
       redirect: 'follow',
     })
 
-    if (!upstream.ok) {
-      return new Response(`Servidor de origem respondeu HTTP ${upstream.status}.`, { status: 502 })
-    }
+    if (!upstream.ok) return new Response(`Servidor de origem respondeu HTTP ${upstream.status}.`, { status: 502 })
 
-    const contentType = upstream.headers.get('content-type') || ''
     const finalUrl = new URL(upstream.url || target.toString())
-    const isManifest = contentType.toLowerCase().includes('mpegurl') || /\.m3u8(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search)
+    const contentType = upstream.headers.get('content-type') || ''
+    const contentDisposition = upstream.headers.get('content-disposition') || ''
+    const isManifest = contentType.toLowerCase().includes('mpegurl') || /\.m3u8(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search) || /\.m3u8/i.test(contentDisposition)
 
     if (isManifest) {
-      const contentLength = Number(upstream.headers.get('content-length') ?? 0)
-      if (contentLength > MAX_MANIFEST_BYTES) {
-        return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
-      }
-
+      const length = Number(upstream.headers.get('content-length') ?? 0)
+      if (length > MAX_MANIFEST_BYTES) return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
       const content = await upstream.text()
-      if (new TextEncoder().encode(content).byteLength > MAX_MANIFEST_BYTES) {
-        return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
-      }
-
+      if (new TextEncoder().encode(content).byteLength > MAX_MANIFEST_BYTES) return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
       const rewritten = rewriteManifest(content, req.url, finalUrl)
       return new Response(rewritten, {
         status: 200,
@@ -117,25 +103,17 @@ export default async function handler(req: Request): Promise<Response> {
           'Cache-Control': 'no-store, no-cache, must-revalidate',
           Pragma: 'no-cache',
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified',
         },
       })
     }
 
-    const headers = copySafeResponseHeaders(upstream.headers)
+    const headers = responseHeaders(upstream.headers)
     if (!headers.has('content-type')) {
-      if (/\.ts(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search)) headers.set('Content-Type', 'video/mp2t')
-      else headers.set('Content-Type', 'application/octet-stream')
+      headers.set('Content-Type', /\.ts(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search) ? 'video/mp2t' : 'application/octet-stream')
     }
-
-    // Deliberately do not copy Content-Length. Node's fetch can transparently
-    // decode an upstream response, which can make the original length incorrect
-    // for the body we are streaming to the browser.
     return new Response(upstream.body, { status: upstream.status, headers })
   } catch (error) {
-    const message = error instanceof DOMException && error.name === 'AbortError'
-      ? 'Tempo limite ao acessar o stream.'
-      : 'Não foi possível acessar o stream de origem.'
+    const message = error instanceof DOMException && error.name === 'AbortError' ? 'Tempo limite ao acessar o stream.' : 'Não foi possível acessar o stream de origem.'
     return new Response(message, { status: 502 })
   } finally {
     clearTimeout(timeout)
