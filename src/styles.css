@@ -1,0 +1,160 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f4f7fb;
+  background: #080a0f;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { min-height: 100%; margin: 0; }
+body { min-width: 320px; background: #080a0f; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+
+.landing {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 15%, rgba(64, 121, 255, 0.14), transparent 35%),
+    #080a0f;
+}
+
+.import-card {
+  width: min(560px, 100%);
+  padding: 52px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 28px;
+  background: rgba(15, 18, 26, .86);
+  box-shadow: 0 28px 80px rgba(0,0,0,.32);
+  text-align: center;
+}
+
+.brand-mark {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: #1c6cff;
+}
+
+.eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .18em;
+  color: #7d8a9f;
+}
+
+.import-card h1 {
+  margin: 14px 0 16px;
+  font-size: clamp(42px, 7vw, 68px);
+  line-height: .98;
+  letter-spacing: -.055em;
+}
+
+.import-card h1 span { color: #4a8cff; }
+.import-card p { margin: 0 auto 28px; max-width: 440px; color: #97a1b2; line-height: 1.6; }
+
+.primary-button {
+  border: 0;
+  border-radius: 13px;
+  padding: 13px 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: white;
+  background: #1c6cff;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(28,108,255,.24);
+}
+.primary-button:hover { filter: brightness(1.08); }
+.privacy-note { margin-top: 18px; color: #687386; font-size: 12px; }
+
+.app-shell { min-height: 100vh; }
+.topbar {
+  height: 64px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  background: rgba(8,10,15,.88);
+  backdrop-filter: blur(18px);
+}
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 800; min-width: 170px; }
+.search-wrap { flex: 1; max-width: 640px; margin: 0 auto; position: relative; display: flex; align-items: center; }
+.search-wrap svg { position: absolute; left: 13px; color: #6f7b90; }
+.search-wrap input {
+  width: 100%;
+  border: 1px solid rgba(255,255,255,.07);
+  background: #11151d;
+  color: white;
+  border-radius: 11px;
+  padding: 10px 12px 10px 39px;
+  outline: none;
+}
+.search-wrap input:focus { border-color: rgba(74,140,255,.55); }
+.ghost-button { width: 38px; height: 38px; border: 1px solid rgba(255,255,255,.07); background: #11151d; color: #9aa5b6; border-radius: 10px; display:grid; place-items:center; }
+.ghost-button:hover { color: white; }
+
+.layout { display: flex; min-height: calc(100vh - 64px); }
+.sidebar { width: 248px; flex: 0 0 248px; padding: 20px 14px; border-right: 1px solid rgba(255,255,255,.06); background: #0b0e14; }
+.playlist-title { padding: 0 10px 18px; color: #e9edf4; font-weight: 700; font-size: 14px; }
+.playlist-title span { display:block; margin-top: 4px; color: #657083; font-size: 11px; font-weight: 500; }
+.sidebar nav { display:flex; flex-direction:column; gap: 4px; }
+.nav-item { display:flex; align-items:center; gap: 10px; width:100%; padding: 10px; border: 0; border-radius: 9px; background: transparent; color: #8f9bad; text-align:left; }
+.nav-item:hover { background:#121721; color:#eaf0f8; }
+.nav-item.active { background:#15233a; color:#66a2ff; }
+
+.content { flex: 1; min-width: 0; padding: 22px; }
+.player-card { width: 100%; }
+.player-screen { aspect-ratio: 16/7; min-height: 280px; border-radius: 16px; border: 1px solid rgba(255,255,255,.06); background:#05070a; display:grid; place-items:center; overflow:hidden; }
+.empty-player, .selected-channel { text-align:center; color:#6f7b8e; }
+.empty-player { display:flex; flex-direction:column; align-items:center; gap:10px; }
+.selected-channel h2 { color:#eaf0f8; margin:14px 0 4px; }
+.selected-channel p { margin:0; }
+.channel-logo { width:56px; height:56px; border-radius:13px; display:grid; place-items:center; overflow:hidden; flex:none; background:#151a23; color:#637086; }
+.channel-logo.large { width:76px; height:76px; margin:0 auto; }
+.channel-logo img { width:100%; height:100%; object-fit:contain; }
+
+.channels-section { margin-top: 28px; }
+.section-heading { display:flex; align-items:end; justify-content:space-between; gap:12px; margin-bottom:16px; }
+.section-heading h2 { margin:5px 0 0; font-size:26px; letter-spacing:-.03em; }
+.count { color:#697587; font-size:13px; }
+.channel-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:10px; }
+.channel-card { display:flex; align-items:center; gap:12px; min-width:0; padding:12px; border:1px solid rgba(255,255,255,.06); border-radius:14px; background:#0f131b; color:#eef2f8; text-align:left; }
+.channel-card:hover { border-color: rgba(74,140,255,.28); background:#121823; }
+.channel-info { min-width:0; }
+.channel-info strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.channel-info span { display:block; margin-top:3px; color:#697587; font-size:11px; }
+.empty-list { padding:40px; text-align:center; color:#687386; }
+
+@media (max-width: 800px) {
+  .brand { min-width: auto; }
+  .brand svg { display:none; }
+  .topbar { padding:0 12px; }
+  .sidebar { width: 190px; flex-basis:190px; }
+  .content { padding:14px; }
+  .player-screen { aspect-ratio:16/10; min-height:0; }
+}
+
+@media (max-width: 640px) {
+  .sidebar { position:fixed; left:0; right:0; bottom:0; width:auto; height:64px; z-index:20; border-right:0; border-top:1px solid rgba(255,255,255,.06); padding:6px; overflow:auto; }
+  .playlist-title { display:none; }
+  .sidebar nav { flex-direction:row; gap:5px; }
+  .nav-item { width:auto; flex:0 0 auto; padding:10px 12px; }
+  .nav-item span { display:none; }
+  .layout { padding-bottom:64px; }
+  .content { padding:12px; }
+  .search-wrap { max-width:none; }
+  .import-card { padding:36px 24px; }
+  .channel-grid { grid-template-columns:1fr; }
+}
