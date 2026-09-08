@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Maximize2, Minimize2, Pause, PictureInPicture2, Play, Radio, RefreshCw, Settings2, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
+import { Maximize2, Minimize2, PictureInPicture2, Radio, RefreshCw, Settings2, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import type { Channel, ChannelVariant } from '../types'
@@ -16,15 +16,6 @@ function proxyStreamUrl(url: string) {
 function xtreamTsFallback(url: string) {
   if (!/\/live\//i.test(url) || !/\.m3u8(?:$|\?)/i.test(url)) return null
   return url.replace(/\.m3u8(?=$|\?)/i, '.ts')
-}
-
-function formatTime(value: number) {
-  if (!Number.isFinite(value)) return 'LIVE'
-  const total = Math.max(0, Math.floor(value))
-  const h = Math.floor(total / 3600)
-  const m = Math.floor((total % 3600) / 60)
-  const s = total % 60
-  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
 }
 
 function uniqueVariants(channel: Channel | null): ChannelVariant[] {
@@ -68,6 +59,7 @@ export default function Player({ channel }: Props) {
   const [controlsVisible, setControlsVisible] = useState(true)
   const [hlsLevels, setHlsLevels] = useState<Array<{ index: number; height: number; bitrate: number }>>([])
   const [hlsQuality, setHlsQuality] = useState(-1)
+  const [playbackRate, setPlaybackRate] = useState(1)
 
   const variants = useMemo(() => uniqueVariants(channel), [channel])
   const activeVariant = variants.find((variant) => variant.id === variantId) ?? null
@@ -90,6 +82,7 @@ export default function Player({ channel }: Props) {
     setVariantId(null)
     setUsingFallback(false)
     setSettingsOpen(false)
+    setPlaybackRate(1)
     showControls()
   }, [channel?.id])
 
@@ -286,6 +279,7 @@ export default function Player({ channel }: Props) {
   const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
   const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
   const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }
+  const changePlaybackRate = () => { const video = videoRef.current; if (!video) return; const rates = [0.5, 0.75, 1, 1.25, 1.5, 2]; const current = Number(video.playbackRate.toFixed(2)); const index = rates.indexOf(current); const next = rates[(index >= 0 ? index + 1 : 2) % rates.length]; video.playbackRate = next; setPlaybackRate(next) }
   const handleVideoClick = () => { togglePlay(); scheduleHideControls() }
 
   if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
@@ -295,20 +289,17 @@ export default function Player({ channel }: Props) {
 
   return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} style={fullscreenRootStyle} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
     <video ref={videoRef} controls={false} playsInline preload="auto" style={fullscreenVideoStyle} onClick={handleVideoClick} />
-    {!isPlaying && !error && <div className="player-center-play" onClick={handleVideoClick}><Play size={28} fill="currentColor" /></div>}
     <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
     {error && <div className="video-error"><span>{error}</span><button onClick={retry}><RefreshCw size={14} /> Tentar novamente</button></div>}
     <div className="player-custom-controls" onMouseEnter={showControls} onDoubleClick={(event) => event.stopPropagation()}>
       {Number.isFinite(duration) && duration > 0 && <input className="player-seek" aria-label="Posição" type="range" min={0} max={duration} step={0.1} value={Math.min(currentTime, duration)} onChange={(event) => { const video = videoRef.current; if (video) video.currentTime = Number(event.target.value) }} />}
       <div className="player-control-row">
-        <button className="player-action" onClick={togglePlay} title={isPlaying ? 'Pausar' : 'Reproduzir'}>{isPlaying ? <Pause size={17} /> : <Play size={17} fill="currentColor" />}</button>
+        <button className="player-live-action player-action" onClick={goLive} title="Ir para o ao vivo"><Radio size={14} /><span>LIVE</span></button>
+        <button className="player-speed-action player-action" onClick={changePlaybackRate} title="Velocidade de reprodução">{playbackRate}x</button>
         <button className="player-action" onClick={() => seekBy(-10)} title="Voltar 10 segundos"><SkipBack size={16} /></button>
         <button className="player-action" onClick={() => seekBy(10)} title="Avançar 10 segundos"><SkipForward size={16} /></button>
         <button className="player-action" onClick={toggleMute} title={isMuted ? 'Ativar som' : 'Silenciar'}>{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
-        <input className="player-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} onChange={(event) => setPlayerVolume(Number(event.target.value))} />
-        <span className="player-time">{formatTime(currentTime)}</span>
-        <span className="player-time">{Number.isFinite(duration) ? ` / ${formatTime(duration)}` : ''}</span>
-        <button className="player-action" onClick={goLive} title="Ir para o ao vivo"><Radio size={16} /></button>
+        <input className="player-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} style={{ background: `linear-gradient(90deg, #4a8cff 0%, #4a8cff ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,.22) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,.22) 100%)` }} onPointerDown={showControls} onChange={(event) => setPlayerVolume(Number(event.target.value))} />
         <span className="player-control-spacer" />
         {variants.length > 1 && <div className="player-settings-wrap">
           <button className="player-action" onClick={() => { setSettingsOpen((value) => !value); showControls() }} title="Qualidade"><Settings2 size={17} /></button>
