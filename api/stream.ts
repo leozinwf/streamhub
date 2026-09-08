@@ -70,12 +70,21 @@ export default async function handler(req: Request): Promise<Response> {
 
   try {
     const requestRange = req.headers.get('range')
+    const requestReferer = req.headers.get('referer')
+    const requestOrigin = req.headers.get('origin')
     const upstreamHeaders: Record<string, string> = {
       Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t, */*',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 StreamHub/1.0',
       'Accept-Encoding': 'identity',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
     }
+
     if (requestRange) upstreamHeaders.Range = requestRange
+    if (requestReferer) upstreamHeaders.Referer = requestReferer
+    else upstreamHeaders.Referer = `${target.origin}/`
+    if (requestOrigin) upstreamHeaders.Origin = requestOrigin
+    else upstreamHeaders.Origin = target.origin
 
     const upstream = await fetch(target, {
       signal: controller.signal,
@@ -83,19 +92,36 @@ export default async function handler(req: Request): Promise<Response> {
       redirect: 'follow',
     })
 
-    if (!upstream.ok) return new Response(`Servidor de origem respondeu HTTP ${upstream.status}.`, { status: 502 })
+    if (!upstream.ok) {
+      const text = await upstream.text().catch(() => '')
+      return new Response(`Servidor de origem respondeu HTTP ${upstream.status}.${text ? ` ${text.slice(0, 300)}` : ''}`, {
+        status: upstream.status,
+        headers: { 'Access-Control-Allow-Origin': '*' },
+      })
+    }
 
     const finalUrl = new URL(upstream.url || target.toString())
     const contentType = upstream.headers.get('content-type') || ''
     const contentDisposition = upstream.headers.get('content-disposition') || ''
-    const isManifest = contentType.toLowerCase().includes('mpegurl') || /\.m3u8(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search) || /\.m3u8/i.test(contentDisposition)
+    const looksLikeManifestUrl = /\.m3u8(?:$|\?)/i.test(target.pathname + target.search) || /\.m3u8(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search)
+    const looksLikeText = /text\//i.test(contentType) || /mpegurl/i.test(contentType)
+    const isManifest = looksLikeManifestUrl || looksLikeText || /\.m3u8/i.test(contentDisposition)
 
     if (isManifest) {
       const length = Number(upstream.headers.get('content-length') ?? 0)
       if (length > MAX_MANIFEST_BYTES) return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
       const content = await upstream.text()
       if (new TextEncoder().encode(content).byteLength > MAX_MANIFEST_BYTES) return new Response('Manifesto HLS excede o limite permitido.', { status: 413 })
-      const rewritten = rewriteManifest(content, req.url, finalUrl)
+
+      const manifestLike = /^\s*#EXTM3U(?:\s|$)/i.test(content)
+      if (!manifestLike && looksLikeManifestUrl) {
+        return new Response('A origem respondeu algo que não é um manifesto HLS válido.', {
+          status: 502,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Access-Control-Allow-Origin': '*' },
+        })
+      }
+
+      const rewritten = manifestLike ? rewriteManifest(content, req.url, finalUrl) : content
       return new Response(rewritten, {
         status: 200,
         headers: {
@@ -114,7 +140,7 @@ export default async function handler(req: Request): Promise<Response> {
     return new Response(upstream.body, { status: upstream.status, headers })
   } catch (error) {
     const message = error instanceof DOMException && error.name === 'AbortError' ? 'Tempo limite ao acessar o stream.' : 'Não foi possível acessar o stream de origem.'
-    return new Response(message, { status: 502 })
+    return new Response(message, { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } })
   } finally {
     clearTimeout(timeout)
   }
