@@ -1,10 +1,10 @@
 import type { Channel, ChannelVariant } from '../types'
 
 const QUALITY_PATTERNS: Array<{ quality: string; pattern: RegExp; weight: number }> = [
-  { quality: '4K H265', pattern: /\b(?:4k|2160p)\b.*\b(?:h[ ._-]?265|hevc)\b/i, weight: 500 },
-  { quality: 'Full HD H265', pattern: /\b(?:full\s*hd|fhd|1080p)\b.*\b(?:h[ ._-]?265|hevc)\b/i, weight: 450 },
-  { quality: 'HD H265', pattern: /\b(?:hd|720p)\b.*\b(?:h[ ._-]?265|hevc)\b/i, weight: 350 },
-  { quality: 'SD H265', pattern: /\b(?:sd|480p|576p)\b.*\b(?:h[ ._-]?265|hevc)\b/i, weight: 250 },
+  { quality: '4K H265', pattern: /\b(?:4k|2160p)\b.*\b(?:h[ ._-]?265|265|hevc)\b/i, weight: 500 },
+  { quality: 'Full HD H265', pattern: /\b(?:full\s*hd|fhd|1080p)\b.*\b(?:h[ ._-]?265|265|hevc)\b/i, weight: 450 },
+  { quality: 'HD H265', pattern: /\b(?:hd|720p)\b.*\b(?:h[ ._-]?265|265|hevc)\b/i, weight: 350 },
+  { quality: 'SD H265', pattern: /\b(?:sd|480p|576p)\b.*\b(?:h[ ._-]?265|265|hevc)\b/i, weight: 250 },
   { quality: '4K', pattern: /\b(?:4k|2160p)\b/i, weight: 400 },
   { quality: 'Full HD', pattern: /\b(?:full\s*hd|fhd|1080p)\b/i, weight: 350 },
   { quality: 'HD', pattern: /\b(?:hd|720p)\b/i, weight: 250 },
@@ -32,6 +32,7 @@ function baseChannelName(name: string) {
     .replace(/\bsd\b/gi, ' ')
     .replace(/\bhd\b/gi, ' ')
     .replace(/\bh[ ._-]?265\b/gi, ' ')
+    .replace(/\b265\b/gi, ' ')
     .replace(/\bhevc\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .replace(/[|/_-]+/g, ' ')
