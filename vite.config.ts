@@ -33,7 +33,6 @@ function localApi(): Plugin {
       }
       for (const [route, handler] of Object.entries(handlers)) {
         server.middlewares.use(route, async (req: any, res: any, next: any) => {
-          const startedAt = Date.now()
           try {
             const headers = new Headers()
             for (const [key, value] of Object.entries(req.headers ?? {})) {
@@ -42,24 +41,13 @@ function localApi(): Plugin {
             }
             const request = new Request(`http://localhost:5173${req.url ?? ''}`, { method: req.method ?? 'GET', headers })
             const response = await handler(request)
-            console.info(`[StreamHub API] ${req.method ?? 'GET'} ${route} -> ${response.status} (${Date.now() - startedAt}ms)`)
             await sendResponse(response, res, route === '/api/stream')
           } catch (error) {
-            console.error(`[StreamHub API] ${req.method ?? 'GET'} ${route} -> EXCEPTION`, error)
+            console.error(`[StreamHub API] ${req.method ?? 'GET'} ${route} failed`, error)
             next(error)
           }
         })
       }
-    },
-    transform(code, id) {
-      if (!id.endsWith('/src/components/Player.tsx')) return null
-
-      const fixed = code.replace(
-        'function uniqueVariants(channel: Channel): ChannelVariant[] {\n  if (!channel.variants?.length) return []',
-        'function uniqueVariants(channel: Channel | null): ChannelVariant[] {\n  if (!channel?.variants?.length) return []',
-      )
-
-      return fixed === code ? null : { code: fixed, map: null }
     },
   }
 }
