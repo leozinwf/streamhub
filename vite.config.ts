@@ -51,49 +51,6 @@ function localApi(): Plugin {
         })
       }
     },
-    transform(code, id) {
-      if (!id.endsWith('/src/App.tsx')) return null
-
-      let fixed = code
-        .replace(
-          "import type { Channel, Playlist } from './types'",
-          "import type { Channel, Playlist } from './types'\nimport ModernPlayer from './components/Player'\nimport { collapseChannelVariants } from './lib/channelVariants'",
-        )
-        .replace(
-          'const filteredChannels = useMemo(() => playlist?.channels.filter(',
-          'const filteredChannels = useMemo(() => collapseChannelVariants(playlist?.channels ?? []).filter(',
-        )
-        .replace(
-          '    ? recentChannels.filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))',
-          '    ? collapseChannelVariants(recentChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))',
-        )
-        .replace(
-          '      ? favoriteChannels.filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))',
-          '      ? collapseChannelVariants(favoriteChannels).filter((channel) => channel.name.toLowerCase().includes(query.toLowerCase()))',
-        )
-        .replace(
-          '<Player channel={selectedChannel} />',
-          '<ModernPlayer channel={selectedChannel} />',
-        )
-
-      // Guard against a partially transformed/cached module: the runtime must never
-      // reference collapseChannelVariants without its import being present.
-      if (fixed.includes('collapseChannelVariants(') && !fixed.includes("import { collapseChannelVariants } from './lib/channelVariants'")) {
-        fixed = fixed.replace(
-          "import type { Channel, Playlist } from './types'",
-          "import type { Channel, Playlist } from './types'\nimport { collapseChannelVariants } from './lib/channelVariants'",
-        )
-      }
-
-      if (fixed.includes('<ModernPlayer') && !fixed.includes("import ModernPlayer from './components/Player'")) {
-        fixed = fixed.replace(
-          "import type { Channel, Playlist } from './types'",
-          "import type { Channel, Playlist } from './types'\nimport ModernPlayer from './components/Player'",
-        )
-      }
-
-      return fixed === code ? null : { code: fixed, map: null }
-    },
   }
 }
 
