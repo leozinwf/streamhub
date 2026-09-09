@@ -1,5 +1,22 @@
 type WebHandler = (request: Request) => Promise<Response>
 
+async function requestBody(incoming: any, method: string) {
+  if (method === 'GET' || method === 'HEAD') return undefined
+  const chunks: Uint8Array[] = []
+  for await (const chunk of incoming) {
+    chunks.push(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk)
+  }
+  if (!chunks.length) return undefined
+  const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0)
+  const body = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body
+}
+
 export async function handleNodeRequest(incoming: any, outgoing: any, handle: WebHandler): Promise<void> {
   try {
     const forwardedProtocol = incoming.headers?.['x-forwarded-proto']
@@ -10,9 +27,11 @@ export async function handleNodeRequest(incoming: any, outgoing: any, handle: We
       if (typeof value === 'string') headers.set(key, value)
       else if (Array.isArray(value)) headers.set(key, value.join(', '))
     }
+    const method = incoming.method || 'GET'
     const request = new Request(new URL(incoming.url || '/', `${protocol}://${host}`), {
-      method: incoming.method || 'GET',
+      method,
       headers,
+      body: await requestBody(incoming, method),
     })
     const response = await handle(request)
     outgoing.statusCode = response.status
