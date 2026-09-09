@@ -18,8 +18,12 @@ function createPlaylist(name: string, channels: Channel[]): Playlist {
   return { id: crypto.randomUUID(), name, channels, importedAt: new Date().toISOString() }
 }
 
-function xtreamApiBase(connection: XtreamConnection) {
-  return `/api/xtream?server=${encodeURIComponent(connection.server)}&username=${encodeURIComponent(connection.username)}&password=${encodeURIComponent(connection.password)}`
+function fetchXtream(connection: XtreamConnection, action?: string, parameters: Record<string, string> = {}) {
+  return fetch('/api/xtream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...connection, action, ...parameters }),
+  })
 }
 
 function inferXtreamConnection(channels: Channel[]): XtreamConnection | null {
@@ -34,12 +38,11 @@ function inferXtreamConnection(channels: Channel[]): XtreamConnection | null {
 }
 
 async function loadMediaCatalog(connection: XtreamConnection): Promise<MediaItem[]> {
-  const base = xtreamApiBase(connection)
   const [vodCategoriesResponse, vodResponse, seriesCategoriesResponse, seriesResponse] = await Promise.all([
-    fetch(`${base}&action=get_vod_categories`),
-    fetch(`${base}&action=get_vod_streams`),
-    fetch(`${base}&action=get_series_categories`),
-    fetch(`${base}&action=get_series`),
+    fetchXtream(connection, 'get_vod_categories'),
+    fetchXtream(connection, 'get_vod_streams'),
+    fetchXtream(connection, 'get_series_categories'),
+    fetchXtream(connection, 'get_series'),
   ])
   const vodCategories = vodCategoriesResponse.ok ? await vodCategoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
   const seriesCategories = seriesCategoriesResponse.ok ? await seriesCategoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
@@ -320,7 +323,7 @@ export default function App() {
     if (contentMode !== 'live' || !connection || !streamId) { setEpgPrograms([]); return }
     let cancelled = false
     setEpgLoading(true)
-    fetch(`${xtreamApiBase(connection)}&action=get_short_epg&stream_id=${encodeURIComponent(streamId)}&limit=8`)
+    fetchXtream(connection, 'get_short_epg', { stream_id: streamId, limit: '8' })
       .then(async (response) => response.ok ? response.json() : Promise.reject())
       .then((data: { epg_listings?: Array<{ title?: string; description?: string; start_timestamp?: string | number; stop_timestamp?: string | number }> }) => {
         if (cancelled) return
@@ -391,7 +394,7 @@ export default function App() {
     if (!connection || !item.seriesId) return
     setSelectedSeries(item); setSeriesEpisodes([]); setSeriesLoading(true)
     try {
-      const response = await fetch(`${xtreamApiBase(connection)}&action=get_series_info&series_id=${encodeURIComponent(item.seriesId)}`)
+      const response = await fetchXtream(connection, 'get_series_info', { series_id: item.seriesId })
       if (!response.ok) throw new Error('Não foi possível carregar os episódios.')
       const data = await response.json() as { episodes?: Record<string, Array<{ id?: string | number; episode_num?: number; title?: string; container_extension?: string; info?: { movie_image?: string } }>> }
       const episodes = Object.entries(data.episodes || {}).flatMap(([season, items]) => items.map((episode, index) => ({
@@ -440,18 +443,17 @@ export default function App() {
     if (!normalizedServer || !username.trim() || !password.trim()) { setUrlError('Informe servidor, usuário e senha.'); return }
     setUrlLoading(true); setUrlError(null)
     try {
-      const base = `/api/xtream?server=${encodeURIComponent(normalizedServer)}&username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password)}`
-      const authResponse = await fetch(base)
+      const connection = { server: normalizedServer, username: username.trim(), password }
+      const authResponse = await fetchXtream(connection)
       if (!authResponse.ok) { const data = await authResponse.json().catch(() => null) as { error?: string } | null; throw new Error(data?.error || 'Não foi possível autenticar.') }
       const auth = await authResponse.json() as { user_info?: { auth?: number; status?: string } }
       if (auth.user_info && (auth.user_info.auth === 0 || auth.user_info.status === 'Disabled')) throw new Error('A conta IPTV não está autorizada.')
-      const [categoriesResponse, liveResponse] = await Promise.all([fetch(`${base}&action=get_live_categories`), fetch(`${base}&action=get_live_streams`)]); if (!liveResponse.ok) throw new Error('Não foi possível carregar os canais.')
+      const [categoriesResponse, liveResponse] = await Promise.all([fetchXtream(connection, 'get_live_categories'), fetchXtream(connection, 'get_live_streams')]); if (!liveResponse.ok) throw new Error('Não foi possível carregar os canais.')
       const categories = categoriesResponse.ok ? await categoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
       const categoryMap = new Map(categories.map((category) => [String(category.category_id), category.category_name || 'Outros']))
       const liveStreams = await liveResponse.json() as Array<{ stream_id?: number | string; name?: string; category_id?: number | string; category_name?: string; stream_icon?: string; container_extension?: string }>
       const channels: Channel[] = categorizeChannels(liveStreams.filter((stream) => stream.stream_id != null && stream.name).map((stream, index) => { const extension = String(stream.container_extension || 'm3u8').toLowerCase().replace(/^\./, ''); const safeExtension = extension === 'ts' || extension === 'm3u8' ? extension : 'm3u8'; const originalGroup = categoryMap.get(String(stream.category_id)) || stream.category_name || 'Outros'; return { id: `xtream-${stream.stream_id}-${index}`, streamId: String(stream.stream_id), name: stream.name || 'Canal sem nome', url: `${normalizedServer}/live/${encodeURIComponent(username.trim())}/${encodeURIComponent(password)}/${stream.stream_id}.${safeExtension}`, group: originalGroup, sourceGroup: originalGroup, logo: stream.stream_icon || undefined } }))
       if (!channels.length) throw new Error('A conta foi conectada, mas nenhum canal ao vivo foi encontrado.')
-      const connection = { server: normalizedServer, username: username.trim(), password }
       const media = await loadMediaCatalog(connection).catch(() => [])
       const next = { ...createPlaylist(`${normalizedServer.replace(/^https?:\/\//, '')} — IPTV`, channels), xtream: connection, media }
       await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setContentMode('home')
