@@ -70,6 +70,51 @@ function safeTarget(target: URL) {
   return `${target.protocol}//${target.host}${target.pathname}`
 }
 
+function getResponseDiagnostics(response: Response) {
+  const headers = [
+    'server',
+    'content-type',
+    'content-length',
+    'location',
+    'cf-ray',
+    'cf-cache-status',
+    'cf-mitigated',
+    'cf-chl-out',
+    'x-cache',
+    'x-cache-status',
+    'x-powered-by',
+    'via',
+    'retry-after',
+    'www-authenticate',
+  ]
+
+  const result: Record<string, string | null> = {}
+
+  for (const header of headers) {
+    result[header] = response.headers.get(header)
+  }
+
+  return result
+}
+
+async function getBodyPreview(response: Response) {
+  try {
+    const clone = response.clone()
+    const text = await clone.text()
+
+    return {
+      length: text.length,
+      preview: text.slice(0, 1000),
+    }
+  } catch (error) {
+    return {
+      length: 0,
+      preview: '',
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
 export async function handleXtream(req: Request): Promise<Response> {
   const requestId = crypto.randomUUID()
 
@@ -181,9 +226,31 @@ export async function handleXtream(req: Request): Promise<Response> {
     action: action || '(none)',
   })
 
+  const headers = upstreamHeaders(req, target)
+
+  console.log('[XTREAM] Upstream request configuration', {
+    requestId,
+    method: 'GET',
+    target: safeTarget(target),
+    headers: {
+      Accept: headers.Accept,
+      'Accept-Language': headers['Accept-Language'],
+      'Cache-Control': headers['Cache-Control'],
+      Pragma: headers.Pragma,
+      Referer: headers.Referer,
+      'User-Agent': headers['User-Agent'],
+    },
+    redirect: 'follow',
+    timeoutMs: TIMEOUT_MS,
+  })
+
   const controller = new AbortController()
 
+  let timedOut = false
+
   const timeout = setTimeout(() => {
+    timedOut = true
+
     console.warn('[XTREAM] Request timeout reached', {
       requestId,
       timeoutMs: TIMEOUT_MS,
@@ -198,17 +265,18 @@ export async function handleXtream(req: Request): Promise<Response> {
   console.log('[XTREAM] Starting upstream fetch', {
     requestId,
     target: safeTarget(target),
-    timeoutMs: TIMEOUT_MS,
   })
 
   try {
     const upstream = await fetch(target, {
       signal: controller.signal,
-      headers: upstreamHeaders(req, target),
+      headers,
       redirect: 'follow',
     })
 
     const durationMs = Date.now() - startedAt
+
+    const diagnostics = getResponseDiagnostics(upstream)
 
     console.log('[XTREAM] Upstream response received', {
       requestId,
@@ -216,38 +284,71 @@ export async function handleXtream(req: Request): Promise<Response> {
       status: upstream.status,
       statusText: upstream.statusText,
       ok: upstream.ok,
+      redirected: upstream.redirected,
       finalUrl: upstream.url
         ? (() => {
             try {
               const url = new URL(upstream.url)
+
               return `${url.protocol}//${url.host}${url.pathname}`
             } catch {
               return '(invalid URL)'
             }
           })()
         : '(none)',
-      serverHeader: upstream.headers.get('server'),
-      contentType: upstream.headers.get('content-type'),
-      contentLength: upstream.headers.get('content-length'),
-      location: upstream.headers.get('location')
-        ? (() => {
-            try {
-              const url = new URL(upstream.headers.get('location')!)
-              return `${url.protocol}//${url.host}${url.pathname}`
-            } catch {
-              return '(invalid location)'
-            }
-          })()
-        : null,
+      diagnostics,
     })
 
     if (!upstream.ok) {
-      console.warn('[XTREAM] Upstream returned HTTP error', {
+      const bodyPreview = await getBodyPreview(upstream)
+
+      console.warn('[XTREAM] Upstream HTTP error diagnostics', {
         requestId,
         status: upstream.status,
         statusText: upstream.statusText,
         durationMs,
+        redirected: upstream.redirected,
+        diagnostics,
+        bodyLength: bodyPreview.length,
+        bodyPreview: bodyPreview.preview,
       })
+
+      if (upstream.status === 403) {
+        console.error('[XTREAM] HTTP 403 DETECTED', {
+          requestId,
+          message:
+            'O servidor IPTV recebeu a requisição, mas recusou o acesso.',
+          possibleCauses: [
+            'IP da Vercel bloqueado',
+            'Firewall/WAF do servidor',
+            'Regra anti-bot',
+            'Regra geográfica',
+            'Cloudflare/WAF',
+            'Restrição de origem',
+            'Header obrigatório ausente',
+          ],
+          server: diagnostics.server,
+          cfRay: diagnostics['cf-ray'],
+          cfCacheStatus: diagnostics['cf-cache-status'],
+          cfMitigated: diagnostics['cf-mitigated'],
+        })
+      }
+
+      if (upstream.status === 401) {
+        console.warn('[XTREAM] HTTP 401 DETECTED', {
+          requestId,
+          message:
+            'O servidor respondeu, mas indicou falha de autenticação.',
+        })
+      }
+
+      if (upstream.status >= 500) {
+        console.error('[XTREAM] UPSTREAM 5XX DETECTED', {
+          requestId,
+          message:
+            'O próprio servidor IPTV ou infraestrutura intermediária retornou erro 5xx.',
+        })
+      }
 
       await logUpstreamFailure('xtream', upstream)
 
@@ -262,21 +363,52 @@ export async function handleXtream(req: Request): Promise<Response> {
       )
     }
 
-    console.log('[XTREAM] Parsing upstream JSON', {
+    console.log('[XTREAM] Upstream returned successful HTTP status', {
       requestId,
+      status: upstream.status,
       durationMs,
+      contentType: upstream.headers.get('content-type'),
     })
 
-    const data = await upstream.json()
+    try {
+      const data = await upstream.json()
 
-    console.log('[XTREAM] Upstream JSON parsed successfully', {
-      requestId,
-      totalDurationMs: Date.now() - startedAt,
-      responseType: Array.isArray(data) ? 'array' : typeof data,
-      isArray: Array.isArray(data),
-    })
+      console.log('[XTREAM] Upstream JSON parsed successfully', {
+        requestId,
+        totalDurationMs: Date.now() - startedAt,
+        responseType: Array.isArray(data)
+          ? 'array'
+          : typeof data,
+        isArray: Array.isArray(data),
+      })
 
-    return jsonResponse(data, 200)
+      return jsonResponse(data, 200)
+    } catch (error) {
+      console.error('[XTREAM] Failed to parse upstream JSON', {
+        requestId,
+        durationMs: Date.now() - startedAt,
+        errorType:
+          error instanceof Error
+            ? error.constructor.name
+            : typeof error,
+        name:
+          error instanceof Error
+            ? error.name
+            : null,
+        message:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      })
+
+      return jsonResponse(
+        {
+          error: 'O servidor IPTV retornou uma resposta que não é um JSON válido.',
+          requestId,
+        },
+        502,
+      )
+    }
   } catch (error) {
     const durationMs = Date.now() - startedAt
 
@@ -284,55 +416,70 @@ export async function handleXtream(req: Request): Promise<Response> {
       requestId,
       durationMs,
       target: safeTarget(target),
-      errorType: error instanceof Error
-        ? error.constructor.name
-        : typeof error,
-      name: error instanceof Error
-        ? error.name
-        : null,
-      message: error instanceof Error
-        ? error.message
-        : String(error),
-      cause: error instanceof Error
-        ? error.cause
-        : null,
-      stack: error instanceof Error
-        ? error.stack
-        : null,
+      timedOut,
+      errorType:
+        error instanceof Error
+          ? error.constructor.name
+          : typeof error,
+      name:
+        error instanceof Error
+          ? error.name
+          : null,
+      message:
+        error instanceof Error
+          ? error.message
+          : String(error),
+      cause:
+        error instanceof Error
+          ? error.cause
+          : null,
+      stack:
+        error instanceof Error
+          ? error.stack
+          : null,
     }
 
     console.error('[XTREAM] Upstream request FAILED', errorInfo)
 
-    const isTimeout =
-      error instanceof DOMException &&
-      error.name === 'AbortError'
-
-    if (isTimeout) {
+    if (timedOut) {
       console.error('[XTREAM] FAILURE REASON: TIMEOUT', {
         requestId,
         durationMs,
         timeoutMs: TIMEOUT_MS,
+        target: safeTarget(target),
       })
     } else {
-      console.error('[XTREAM] FAILURE REASON: CONNECTION/FETCH ERROR', {
+      console.error('[XTREAM] FAILURE REASON: FETCH/CONNECTION ERROR', {
         requestId,
-        errorName: error instanceof Error ? error.name : null,
-        errorMessage: error instanceof Error ? error.message : String(error),
+        durationMs,
+        errorName:
+          error instanceof Error
+            ? error.name
+            : null,
+        errorMessage:
+          error instanceof Error
+            ? error.message
+            : String(error),
+        cause:
+          error instanceof Error
+            ? error.cause
+            : null,
       })
     }
 
     return jsonResponse(
       {
-        error: isTimeout
+        error: timedOut
           ? 'Tempo limite ao conectar ao servidor IPTV.'
           : 'Não foi possível conectar ao servidor IPTV.',
         requestId,
         diagnostic: {
-          type: error instanceof Error
-            ? error.name
-            : typeof error,
+          type:
+            error instanceof Error
+              ? error.name
+              : typeof error,
           durationMs,
-          timeout: isTimeout,
+          timeout: timedOut,
         },
       },
       502,
