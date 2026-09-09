@@ -1,4 +1,5 @@
 import { handleNodeRequest } from './adapter.js'
+import { logUpstreamFailure } from '../server/upstreamDiagnostics.js'
 
 const MAX_PLAYLIST_BYTES = 15 * 1024 * 1024
 const TIMEOUT_MS = 15000
@@ -39,6 +40,7 @@ export async function handlePlaylist(req: Request): Promise<Response> {
     })
 
     if (!upstream.ok) {
+      logUpstreamFailure('playlist', upstream)
       return new Response(`Servidor de origem respondeu HTTP ${upstream.status}.`, { status: 502 })
     }
 

@@ -1,4 +1,5 @@
 import { handleNodeRequest } from './adapter.js'
+import { logUpstreamFailure } from '../server/upstreamDiagnostics.js'
 
 const TIMEOUT_MS = 15000
 
@@ -56,6 +57,7 @@ export async function handleXtream(req: Request): Promise<Response> {
     })
 
     if (!upstream.ok) {
+      logUpstreamFailure('xtream', upstream)
       return Response.json({ error: `Servidor de origem respondeu HTTP ${upstream.status}.` }, { status: 502 })
     }
 
