@@ -74,7 +74,7 @@ export async function handleXtream(req: Request): Promise<Response> {
     })
 
     if (!upstream.ok) {
-      logUpstreamFailure('xtream', upstream)
+      await logUpstreamFailure('xtream', upstream)
       return Response.json({ error: `Servidor de origem respondeu HTTP ${upstream.status}.` }, { status: 502 })
     }
 
