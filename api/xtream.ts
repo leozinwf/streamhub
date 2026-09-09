@@ -2,6 +2,7 @@ import { handleNodeRequest } from './adapter.js'
 import { logUpstreamFailure } from '../server/upstreamDiagnostics.js'
 
 const TIMEOUT_MS = 15000
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
 
 function normalizeServer(value: string) {
   const raw = value.trim().replace(/\/+$/, '')
@@ -20,6 +21,22 @@ function normalizeServer(value: string) {
 
 function text(value: string | null) {
   return value?.trim() ?? ''
+}
+
+function upstreamHeaders(req: Request, target: URL) {
+  const incomingUserAgent = text(req.headers.get('user-agent'))
+  const userAgent = incomingUserAgent && !/vercel|node|undici|bot|crawler|spider/i.test(incomingUserAgent)
+    ? incomingUserAgent
+    : BROWSER_USER_AGENT
+
+  return {
+    Accept: 'application/json, text/plain, */*',
+    'Accept-Language': text(req.headers.get('accept-language')) || 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Cache-Control': 'no-cache',
+    Pragma: 'no-cache',
+    Referer: `${target.origin}/`,
+    'User-Agent': userAgent,
+  }
 }
 
 export async function handleXtream(req: Request): Promise<Response> {
@@ -52,7 +69,7 @@ export async function handleXtream(req: Request): Promise<Response> {
   try {
     const upstream = await fetch(target, {
       signal: controller.signal,
-      headers: { Accept: 'application/json' },
+      headers: upstreamHeaders(req, target),
       redirect: 'follow',
     })
 
