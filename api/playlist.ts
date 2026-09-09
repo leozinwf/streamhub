@@ -40,7 +40,7 @@ export async function handlePlaylist(req: Request): Promise<Response> {
     })
 
     if (!upstream.ok) {
-      logUpstreamFailure('playlist', upstream)
+      await logUpstreamFailure('playlist', upstream)
       return new Response(`Servidor de origem respondeu HTTP ${upstream.status}.`, { status: 502 })
     }
 
