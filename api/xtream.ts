@@ -23,6 +23,17 @@ function text(value: string | null) {
   return value?.trim() ?? ''
 }
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Cache-Control': 'no-store',
+}
+
+function jsonResponse(body: unknown, status: number) {
+  return Response.json(body, { status, headers: corsHeaders })
+}
+
 function upstreamHeaders(req: Request, target: URL) {
   const incomingUserAgent = text(req.headers.get('user-agent'))
   const userAgent = incomingUserAgent && !/vercel|node|undici|bot|crawler|spider/i.test(incomingUserAgent)
@@ -40,18 +51,25 @@ function upstreamHeaders(req: Request, target: URL) {
 }
 
 export async function handleXtream(req: Request): Promise<Response> {
-  if (req.method !== 'GET') {
-    return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } })
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders })
+  }
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405, headers: { ...corsHeaders, Allow: 'GET, POST, OPTIONS' } })
   }
 
   const params = new URL(req.url).searchParams
-  const server = normalizeServer(text(params.get('server')))
-  const username = text(params.get('username'))
-  const password = text(params.get('password'))
-  const action = text(params.get('action'))
+  const body = req.method === 'POST'
+    ? await req.json().catch(() => ({})) as Record<string, unknown>
+    : {}
+  const value = (key: string) => text(typeof body[key] === 'string' ? body[key] as string : params.get(key))
+  const server = normalizeServer(value('server'))
+  const username = value('username')
+  const password = value('password')
+  const action = value('action')
 
   if (!server || !username || !password) {
-    return Response.json({ error: 'Servidor, usuário e senha são obrigatórios.' }, { status: 400 })
+    return jsonResponse({ error: 'Servidor, usuário e senha são obrigatórios.' }, 400)
   }
 
   const target = new URL('/player_api.php', server)
@@ -59,8 +77,8 @@ export async function handleXtream(req: Request): Promise<Response> {
   target.searchParams.set('password', password)
   if (action) target.searchParams.set('action', action)
   for (const key of ['category_id', 'series_id', 'vod_id', 'stream_id', 'limit']) {
-    const value = text(params.get(key))
-    if (value) target.searchParams.set(key, value)
+    const parameter = value(key)
+    if (parameter) target.searchParams.set(key, parameter)
   }
 
   const controller = new AbortController()
@@ -75,19 +93,16 @@ export async function handleXtream(req: Request): Promise<Response> {
 
     if (!upstream.ok) {
       await logUpstreamFailure('xtream', upstream)
-      return Response.json({ error: `Servidor de origem respondeu HTTP ${upstream.status}.` }, { status: 502 })
+      return jsonResponse({ error: `Servidor de origem respondeu HTTP ${upstream.status}.` }, 502)
     }
 
     const data = await upstream.json()
-    return Response.json(data, {
-      status: 200,
-      headers: { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' },
-    })
+    return jsonResponse(data, 200)
   } catch (error) {
     const message = error instanceof DOMException && error.name === 'AbortError'
       ? 'Tempo limite ao conectar ao servidor IPTV.'
       : 'Não foi possível conectar ao servidor IPTV.'
-    return Response.json({ error: message }, { status: 502 })
+    return jsonResponse({ error: message }, 502)
   } finally {
     clearTimeout(timeout)
   }

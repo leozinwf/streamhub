@@ -18,8 +18,12 @@ function createPlaylist(name: string, channels: Channel[]): Playlist {
   return { id: crypto.randomUUID(), name, channels, importedAt: new Date().toISOString() }
 }
 
-function xtreamApiBase(connection: XtreamConnection) {
-  return `/api/xtream?server=${encodeURIComponent(connection.server)}&username=${encodeURIComponent(connection.username)}&password=${encodeURIComponent(connection.password)}`
+function fetchXtream(connection: XtreamConnection, action?: string, parameters: Record<string, string> = {}) {
+  return fetch('/api/xtream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...connection, action, ...parameters }),
+  })
 }
 
 function inferXtreamConnection(channels: Channel[]): XtreamConnection | null {
@@ -34,12 +38,11 @@ function inferXtreamConnection(channels: Channel[]): XtreamConnection | null {
 }
 
 async function loadMediaCatalog(connection: XtreamConnection): Promise<MediaItem[]> {
-  const base = xtreamApiBase(connection)
   const [vodCategoriesResponse, vodResponse, seriesCategoriesResponse, seriesResponse] = await Promise.all([
-    fetch(`${base}&action=get_vod_categories`),
-    fetch(`${base}&action=get_vod_streams`),
-    fetch(`${base}&action=get_series_categories`),
-    fetch(`${base}&action=get_series`),
+    fetchXtream(connection, 'get_vod_categories'),
+    fetchXtream(connection, 'get_vod_streams'),
+    fetchXtream(connection, 'get_series_categories'),
+    fetchXtream(connection, 'get_series'),
   ])
   const vodCategories = vodCategoriesResponse.ok ? await vodCategoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
   const seriesCategories = seriesCategoriesResponse.ok ? await seriesCategoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
@@ -237,7 +240,9 @@ export default function App() {
   const [selectedGroup, setSelectedGroup] = useState('Todos')
   const [selectedSubgroup, setSelectedSubgroup] = useState('Todos')
   const [contentMode, setContentMode] = useState<'home' | 'live' | 'movie' | 'series'>('home')
-  const [categoryStyle, setCategoryStyle] = useState<'smart' | 'provider'>('smart')
+  const [categoryStyle, setCategoryStyle] = useState<'smart' | 'provider'>(() => {
+    try { return localStorage.getItem('streamhub-category-style') === 'provider' ? 'provider' : 'smart' } catch { return 'smart' }
+  })
   const [selectedMediaCategory, setSelectedMediaCategory] = useState('Todos')
   const [selectedSeries, setSelectedSeries] = useState<MediaItem | null>(null)
   const [seriesEpisodes, setSeriesEpisodes] = useState<Channel[]>([])
@@ -283,6 +288,13 @@ export default function App() {
     try { localStorage.setItem('streamhub-channel-view', view) } catch {}
   }
 
+  function changeCategoryStyle(style: 'smart' | 'provider') {
+    setCategoryStyle(style)
+    setSelectedGroup('Todos')
+    setSelectedSubgroup('Todos')
+    try { localStorage.setItem('streamhub-category-style', style) } catch {}
+  }
+
   useEffect(() => {
     setRecentChannels(readStoredChannels(RECENT_STORAGE_KEY, MAX_RECENT_CHANNELS).map(categorizeChannel))
     setFavoriteChannels(readStoredChannels(FAVORITES_STORAGE_KEY).map(categorizeChannel))
@@ -311,7 +323,7 @@ export default function App() {
     if (contentMode !== 'live' || !connection || !streamId) { setEpgPrograms([]); return }
     let cancelled = false
     setEpgLoading(true)
-    fetch(`${xtreamApiBase(connection)}&action=get_short_epg&stream_id=${encodeURIComponent(streamId)}&limit=8`)
+    fetchXtream(connection, 'get_short_epg', { stream_id: streamId, limit: '8' })
       .then(async (response) => response.ok ? response.json() : Promise.reject())
       .then((data: { epg_listings?: Array<{ title?: string; description?: string; start_timestamp?: string | number; stop_timestamp?: string | number }> }) => {
         if (cancelled) return
@@ -382,7 +394,7 @@ export default function App() {
     if (!connection || !item.seriesId) return
     setSelectedSeries(item); setSeriesEpisodes([]); setSeriesLoading(true)
     try {
-      const response = await fetch(`${xtreamApiBase(connection)}&action=get_series_info&series_id=${encodeURIComponent(item.seriesId)}`)
+      const response = await fetchXtream(connection, 'get_series_info', { series_id: item.seriesId })
       if (!response.ok) throw new Error('Não foi possível carregar os episódios.')
       const data = await response.json() as { episodes?: Record<string, Array<{ id?: string | number; episode_num?: number; title?: string; container_extension?: string; info?: { movie_image?: string } }>> }
       const episodes = Object.entries(data.episodes || {}).flatMap(([season, items]) => items.map((episode, index) => ({
@@ -431,18 +443,17 @@ export default function App() {
     if (!normalizedServer || !username.trim() || !password.trim()) { setUrlError('Informe servidor, usuário e senha.'); return }
     setUrlLoading(true); setUrlError(null)
     try {
-      const base = `/api/xtream?server=${encodeURIComponent(normalizedServer)}&username=${encodeURIComponent(username.trim())}&password=${encodeURIComponent(password)}`
-      const authResponse = await fetch(base)
+      const connection = { server: normalizedServer, username: username.trim(), password }
+      const authResponse = await fetchXtream(connection)
       if (!authResponse.ok) { const data = await authResponse.json().catch(() => null) as { error?: string } | null; throw new Error(data?.error || 'Não foi possível autenticar.') }
       const auth = await authResponse.json() as { user_info?: { auth?: number; status?: string } }
       if (auth.user_info && (auth.user_info.auth === 0 || auth.user_info.status === 'Disabled')) throw new Error('A conta IPTV não está autorizada.')
-      const [categoriesResponse, liveResponse] = await Promise.all([fetch(`${base}&action=get_live_categories`), fetch(`${base}&action=get_live_streams`)]); if (!liveResponse.ok) throw new Error('Não foi possível carregar os canais.')
+      const [categoriesResponse, liveResponse] = await Promise.all([fetchXtream(connection, 'get_live_categories'), fetchXtream(connection, 'get_live_streams')]); if (!liveResponse.ok) throw new Error('Não foi possível carregar os canais.')
       const categories = categoriesResponse.ok ? await categoriesResponse.json() as Array<{ category_id?: string | number; category_name?: string }> : []
       const categoryMap = new Map(categories.map((category) => [String(category.category_id), category.category_name || 'Outros']))
       const liveStreams = await liveResponse.json() as Array<{ stream_id?: number | string; name?: string; category_id?: number | string; category_name?: string; stream_icon?: string; container_extension?: string }>
       const channels: Channel[] = categorizeChannels(liveStreams.filter((stream) => stream.stream_id != null && stream.name).map((stream, index) => { const extension = String(stream.container_extension || 'm3u8').toLowerCase().replace(/^\./, ''); const safeExtension = extension === 'ts' || extension === 'm3u8' ? extension : 'm3u8'; const originalGroup = categoryMap.get(String(stream.category_id)) || stream.category_name || 'Outros'; return { id: `xtream-${stream.stream_id}-${index}`, streamId: String(stream.stream_id), name: stream.name || 'Canal sem nome', url: `${normalizedServer}/live/${encodeURIComponent(username.trim())}/${encodeURIComponent(password)}/${stream.stream_id}.${safeExtension}`, group: originalGroup, sourceGroup: originalGroup, logo: stream.stream_icon || undefined } }))
       if (!channels.length) throw new Error('A conta foi conectada, mas nenhum canal ao vivo foi encontrado.')
-      const connection = { server: normalizedServer, username: username.trim(), password }
       const media = await loadMediaCatalog(connection).catch(() => [])
       const next = { ...createPlaylist(`${normalizedServer.replace(/^https?:\/\//, '')} — IPTV`, channels), xtream: connection, media }
       await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setContentMode('home')
@@ -469,7 +480,7 @@ export default function App() {
       {contentMode === 'live' && selectedChannel && <section className="epg-guide"><div className="epg-title"><CalendarDays size={17} /><strong>Programação</strong></div>{epgLoading ? <span className="epg-empty">Carregando programação...</span> : epgPrograms.length ? <div className="epg-list">{epgPrograms.map((program, index) => <div key={`${program.start}-${index}`} className={index === 0 && program.start * 1000 <= Date.now() ? 'current' : ''}><time>{new Date(program.start * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time><span><strong>{program.title}</strong>{program.description && <small>{program.description}</small>}</span>{index === 0 && program.start * 1000 <= Date.now() && <em>AGORA</em>}</div>)}</div> : <span className="epg-empty">Este canal não forneceu a programação.</span>}</section>}
       {contentMode === 'live' ? <section className="channels-section">
         <div className="section-heading"><div><span className="eyebrow">BIBLIOTECA</span><h2>{selectedGroup === '+18' ? 'Área +18' : selectedGroup === 'Todos' ? 'Todos os canais' : selectedGroup}</h2></div><div className="library-actions"><span className="count">{channels.length} canais</span><div className="view-toggle" role="group" aria-label="Visualização dos canais"><button aria-label="Quadrados" title="Quadrados" aria-pressed={channelView === 'grid'} onClick={() => changeChannelView('grid')}><LayoutGrid size={18} /></button><button aria-label="Lista" title="Lista" aria-pressed={channelView === 'list'} onClick={() => changeChannelView('list')}><List size={18} /></button></div></div></div>
-        <div className="category-mode-toggle"><span>Organização:</span><button className={categoryStyle === 'smart' ? 'active' : ''} onClick={() => { setCategoryStyle('smart'); setSelectedGroup('Todos'); setSelectedSubgroup('Todos') }}>Inteligente</button><button className={categoryStyle === 'provider' ? 'active' : ''} onClick={() => { setCategoryStyle('provider'); setSelectedGroup('Todos'); setSelectedSubgroup('Todos') }}>Original do IPTV</button></div>
+        <div className="category-mode-toggle"><span>Organização:</span><button className={categoryStyle === 'smart' ? 'active' : ''} onClick={() => changeCategoryStyle('smart')}>Inteligente</button><button className={categoryStyle === 'provider' ? 'active' : ''} onClick={() => changeCategoryStyle('provider')}>Original do IPTV</button></div>
         {subgroups.length > 0 && <div className="subcategory-strip"><button className={selectedSubgroup === 'Todos' ? 'active' : ''} onClick={() => setSelectedSubgroup('Todos')}>Todos</button>{subgroups.map((subgroup) => <button key={subgroup} className={selectedSubgroup === subgroup ? 'active' : ''} onClick={() => setSelectedSubgroup(subgroup)}>{subgroup}</button>)}</div>}
         {channelView === 'list' && channels.length ? <div className="recent-list">{channels.map((channel) => <div key={channel.id} className={selectedChannel?.url === channel.url ? 'recent-row selected' : 'recent-row'}><button className="recent-main" onClick={() => selectChannel(channel)}><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={18} />}</div><div><strong>{channel.name}</strong><span>{channel.subgroup || channel.group} · transmissão ao vivo</span></div></button>{selectedGroup === 'Recentes' && <button className="recent-remove" aria-label={`Remover ${channel.name} dos recentes`} title="Remover dos recentes" onClick={() => removeRecent(channel)}><X size={15} /></button>}</div>)}</div> : channels.length ? <div className={selectedGroup === '+18' ? 'channel-grid adult-area' : 'channel-grid'}>{channels.map((channel) => <button key={channel.id} className={selectedChannel?.url === channel.url ? 'channel-card selected' : 'channel-card'} onClick={() => selectChannel(channel)}><div className="channel-thumb">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={42} />}<span className="live-badge">AO VIVO</span><span className="thumb-play"><Play size={15} fill="currentColor" /></span></div><div className="channel-info"><div className="channel-logo-mini">{channel.logo ? <img src={channel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={17} />}</div><div><strong>{channel.name}</strong><span>{channel.subgroup || channel.group} · transmissão ao vivo</span></div></div></button>)}</div> : <div className="empty-list">{selectedGroup === '+18' ? 'Nenhum canal +18 encontrado.' : 'Nenhum canal encontrado.'}</div>}
       </section> : <section className="channels-section media-library">
@@ -482,7 +493,7 @@ export default function App() {
         <button className="nav-item" onClick={() => selectContentMode('home')}><Home size={18} /><span>Escolher biblioteca</span></button>
         <button className="nav-item" onClick={exportM3u}><Download size={18} /><span>Exportar M3U</span></button>
         <button className="nav-item" onClick={() => { setSettingsOpen(true); setSidebarOpen(false) }}><Settings size={18} /><span>Configurações e acesso</span></button>
-        {contentMode === 'live' && <><button className={selectedGroup === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Todos')}><Radio size={18} /><span>Todos os canais</span></button><button className={selectedGroup === 'Recentes' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Recentes')}><Clock3 size={18} /><span>Recentes</span>{recentChannels.length > 0 && <small>{recentChannels.length}</small>}</button><button className={selectedGroup === 'Favoritos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Favoritos')}><Star size={18} /><span>Favoritos</span>{favoriteChannels.length > 0 && <small>{favoriteChannels.length}</small>}</button><div className="nav-divider" /><div className="nav-heading">{categoryStyle === 'smart' ? 'CATEGORIAS INTELIGENTES' : 'CATEGORIAS DO IPTV'}</div>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup(group)}><Radio size={17} /><span>{group}</span></button>)}{adultCollapsed.length > 0 && <><div className="nav-divider" /><button className={selectedGroup === '+18' ? 'nav-item active adult-nav-item' : 'nav-item adult-nav-item'} onClick={() => selectGroup('+18')}><span className="adult-nav-icon">+18</span><span>Área +18</span></button></>}<div className="nav-divider" /><button className="nav-item" onClick={clearRecents} disabled={!recentChannels.length}><Trash2 size={17} /><span>Limpar recentes</span></button></>}
+        {contentMode === 'live' && <><button className={selectedGroup === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Todos')}><Radio size={18} /><span>Todos os canais</span></button><button className={selectedGroup === 'Recentes' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Recentes')}><Clock3 size={18} /><span>Recentes</span>{recentChannels.length > 0 && <small>{recentChannels.length}</small>}</button><button className={selectedGroup === 'Favoritos' ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup('Favoritos')}><Star size={18} /><span>Favoritos</span>{favoriteChannels.length > 0 && <small>{favoriteChannels.length}</small>}</button><div className="nav-divider" /><div className="sidebar-category-mode" role="group" aria-label="Organização das categorias"><button className={categoryStyle === 'smart' ? 'active' : ''} aria-pressed={categoryStyle === 'smart'} onClick={() => changeCategoryStyle('smart')}>Inteligente</button><button className={categoryStyle === 'provider' ? 'active' : ''} aria-pressed={categoryStyle === 'provider'} onClick={() => changeCategoryStyle('provider')}>Lista IPTV</button></div><div className="nav-heading">{categoryStyle === 'smart' ? 'CATEGORIAS INTELIGENTES' : 'CATEGORIAS DO IPTV'}</div>{groups.map((group) => <button key={group} className={selectedGroup === group ? 'nav-item active' : 'nav-item'} onClick={() => selectGroup(group)}><Radio size={17} /><span>{group}</span></button>)}{adultCollapsed.length > 0 && <><div className="nav-divider" /><button className={selectedGroup === '+18' ? 'nav-item active adult-nav-item' : 'nav-item adult-nav-item'} onClick={() => selectGroup('+18')}><span className="adult-nav-icon">+18</span><span>Área +18</span></button></>}<div className="nav-divider" /><button className="nav-item" onClick={clearRecents} disabled={!recentChannels.length}><Trash2 size={17} /><span>Limpar recentes</span></button></>}
         {(contentMode === 'movie' || contentMode === 'series') && <><button className="nav-item" onClick={() => selectContentMode(contentMode === 'movie' ? 'live' : 'movie')}>{contentMode === 'movie' ? <Radio size={18} /> : <Film size={18} />}<span>{contentMode === 'movie' ? 'TV ao vivo' : 'Filmes'}</span></button><button className="nav-item" onClick={() => selectContentMode(contentMode === 'series' ? 'live' : 'series')}>{contentMode === 'series' ? <Radio size={18} /> : <Clapperboard size={18} />}<span>{contentMode === 'series' ? 'TV ao vivo' : 'Séries'}</span></button><div className="nav-divider" /><div className="nav-heading">CATEGORIAS</div><button className={selectedMediaCategory === 'Todos' ? 'nav-item active' : 'nav-item'} onClick={() => setSelectedMediaCategory('Todos')}><LayoutGrid size={17} /><span>Todos</span></button>{mediaCategories.map((category) => <button key={category} className={selectedMediaCategory === category ? 'nav-item active' : 'nav-item'} onClick={() => { setSelectedMediaCategory(category); setSelectedSeries(null); setSidebarOpen(false) }}><Film size={17} /><span>{category}</span></button>)}</>}
       </nav>
     </aside>{sidebarOpen && <button className="sidebar-overlay" aria-label="Fechar menu" onClick={() => setSidebarOpen(false)} />}</div>

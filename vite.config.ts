@@ -41,7 +41,19 @@ function localApi(): Plugin {
               if (typeof value === 'string') headers.set(key, value)
               else if (Array.isArray(value)) headers.set(key, value.join(', '))
             }
-            const request = new Request(`http://localhost:5173${req.url ?? ''}`, { method: req.method ?? 'GET', headers })
+            const method = req.method ?? 'GET'
+            const chunks: Uint8Array[] = []
+            if (method !== 'GET' && method !== 'HEAD') {
+              for await (const chunk of req) chunks.push(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk)
+            }
+            const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0)
+            const body = chunks.length ? new Uint8Array(size) : undefined
+            let offset = 0
+            for (const chunk of chunks) {
+              body?.set(chunk, offset)
+              offset += chunk.byteLength
+            }
+            const request = new Request(`http://localhost:5173${req.url ?? ''}`, { method, headers, body })
             const response = await handler(request)
             await sendResponse(response, res, route === '/api/stream' || route === '/api/export')
           } catch (error) {
