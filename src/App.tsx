@@ -14,6 +14,7 @@ const RECENT_STORAGE_KEY = 'streamhub-recent-channels'
 const FAVORITES_STORAGE_KEY = 'streamhub-favorite-channels'
 const MAX_RECENT_CHANNELS = 20
 const THEATER_STORAGE_KEY = 'streamhub-theater-mode'
+const LAST_LIVE_STORAGE_KEY = 'streamhub-last-live-channel'
 
 function createPlaylist(name: string, channels: Channel[]): Playlist {
   return { id: crypto.randomUUID(), name, channels, importedAt: new Date().toISOString() }
@@ -272,13 +273,13 @@ export default function App() {
 
   useEffect(() => {
     const slot = playerSlotRef.current
-    if (!slot || !selectedChannel) { setMiniPlayer(false); return }
+    if (!slot || !selectedChannel || theaterMode) { setMiniPlayer(false); return }
     const observer = new IntersectionObserver(([entry]) => {
       setMiniPlayer(!entry.isIntersecting && entry.boundingClientRect.top < 0)
     }, { rootMargin: '-64px 0px 0px 0px' })
     observer.observe(slot)
     return () => observer.disconnect()
-  }, [ready, playlist !== null, selectedChannel !== null])
+  }, [ready, playlist !== null, selectedChannel !== null, theaterMode, contentMode])
 
   function changeChannelView(view: 'grid' | 'list') {
     setChannelView(view)
@@ -298,6 +299,17 @@ export default function App() {
       if (stored) {
         const categorized = { ...stored, channels: categorizeChannels(stored.channels) }
         setPlaylist(categorized)
+        try {
+          const last = JSON.parse(localStorage.getItem(LAST_LIVE_STORAGE_KEY) || 'null')
+          if (last?.playlistId === categorized.id && typeof last.channelId === 'string') {
+            const restored = collapseChannelVariants(categorized.channels).find((channel) =>
+              channel.id === last.channelId || channel.variants?.some((variant) => variant.id === last.channelId))
+            if (restored) {
+              setSelectedChannel(restored)
+              setContentMode('live')
+            }
+          }
+        } catch { /* Ignore invalid or unavailable saved preferences. */ }
         await savePlaylist(categorized).catch(() => undefined)
         const connection = categorized.xtream || inferXtreamConnection(categorized.channels)
         if (connection && !categorized.media?.length) {
@@ -311,6 +323,20 @@ export default function App() {
       setReady(true)
     })
   }, [])
+
+  useEffect(() => {
+    // Wait for playlist hydration before updating the saved selection.
+    if (!ready) return
+    try {
+      const belongsToPlaylist = playlist?.channels.some((channel) =>
+        channel.id === selectedChannel?.id || channel.variants?.some((variant) => variant.id === selectedChannel?.id))
+      if (playlist && selectedChannel && belongsToPlaylist && (!selectedChannel.kind || selectedChannel.kind === 'live')) {
+        localStorage.setItem(LAST_LIVE_STORAGE_KEY, JSON.stringify({ playlistId: playlist.id, channelId: selectedChannel.id }))
+      } else {
+        localStorage.removeItem(LAST_LIVE_STORAGE_KEY)
+      }
+    } catch { /* Storage may be unavailable. */ }
+  }, [ready, playlist, selectedChannel])
 
   useEffect(() => {
     const connection = playlist?.xtream || inferXtreamConnection(playlist?.channels || [])
@@ -471,7 +497,7 @@ export default function App() {
 
   const favorite = selectedChannel ? favoriteKeys.has(canonicalChannelKey(selectedChannel)) : false
   return <div className={`app-shell ${theaterMode ? 'theater-mode' : ''}`}>
-    <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir menu"><Menu size={21} /></button><button className="brand brand-button" onClick={() => selectContentMode('home')} title="Voltar ao início"><Tv size={21} /><span>StreamHub</span></button><div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" />{query && <button className="search-clear" type="button" aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={15} /></button>}</div><button className="ghost-button home-button" onClick={() => selectContentMode('home')} title="Escolher biblioteca"><Home size={18} /></button><button className="ghost-button settings-button" onClick={() => setSettingsOpen(true)} title="Configurações e acesso"><Settings size={18} /></button><button className={theaterMode ? 'ghost-button active-toggle' : 'ghost-button'} onClick={toggleTheater} title={theaterMode ? 'Sair do modo teatro' : 'Modo teatro'}><Theater size={18} /></button><button className="ghost-button" onClick={exportM3u} title="Exportar canais em M3U"><Download size={18} /></button><button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button><button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
+    <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen((value) => !value)} aria-label="Abrir menu"><Menu size={21} /></button><button className="brand brand-button" onClick={() => selectContentMode('home')} title="Voltar ao início"><Tv size={21} /><span>StreamHub</span></button><div className="search-wrap"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar canais" />{query && <button className="search-clear" type="button" aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={15} /></button>}</div><button className="ghost-button home-button" onClick={() => selectContentMode('home')} title="Escolher biblioteca"><Home size={18} /></button><button className="ghost-button settings-button" onClick={() => setSettingsOpen(true)} title="Configurações e acesso"><Settings size={18} /></button><button className={theaterMode ? 'ghost-button theater-toggle active-toggle' : 'ghost-button theater-toggle'} onClick={toggleTheater} title={theaterMode ? 'Sair do modo teatro' : 'Modo teatro'}><Theater size={18} /></button><button className="ghost-button" onClick={exportM3u} title="Exportar canais em M3U"><Download size={18} /></button><button className="ghost-button" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={18} /></button><button className="ghost-button" onClick={reset} title="Remover playlist"><X size={18} /></button><input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
     <div className="layout"><main className="content"><section className="watch-area"><div className="player-card"><div ref={playerSlotRef} className="player-slot"><div className={`player-screen ${miniPlayer ? 'mini-player' : ''}`}><ModernPlayer channel={selectedChannel} />{miniPlayer && <button className="mini-return" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} title="Voltar ao player">Expandir</button>}</div></div>{selectedChannel && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.group} · transmissão ao vivo</p></div><button className="ghost-button" onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}><Star size={19} fill={favorite ? 'currentColor' : 'none'} /></button></div>}</div></section>
       {contentMode === 'live' && selectedChannel && <section className="epg-guide"><div className="epg-title"><CalendarDays size={17} /><strong>Programação</strong></div>{epgLoading ? <span className="epg-empty">Carregando programação...</span> : epgPrograms.length ? <div className="epg-list">{epgPrograms.map((program, index) => <div key={`${program.start}-${index}`} className={index === 0 && program.start * 1000 <= Date.now() ? 'current' : ''}><time>{new Date(program.start * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time><span><strong>{program.title}</strong>{program.description && <small>{program.description}</small>}</span>{index === 0 && program.start * 1000 <= Date.now() && <em>AGORA</em>}</div>)}</div> : <span className="epg-empty">Este canal não forneceu a programação.</span>}</section>}
       {contentMode === 'live' ? <section className="channels-section">

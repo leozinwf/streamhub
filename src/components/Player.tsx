@@ -38,6 +38,8 @@ function safePlay(video: HTMLVideoElement, audible = false) {
   })
 }
 
+const PLAYBACK_RATES = ['0.5', '0.75', '1', '1.25', '1.5', '2'] as const
+
 type Props = {
   channel: Channel | null
 }
@@ -65,7 +67,8 @@ export default function Player({ channel }: Props) {
   const [controlsVisible, setControlsVisible] = useState(true)
   const [hlsLevels, setHlsLevels] = useState<Array<{ index: number; height: number; bitrate: number }>>([])
   const [hlsQuality, setHlsQuality] = useState(-1)
-  const [playbackRate, setPlaybackRate] = usePreference('streamhub-playback-rate', '1', ['0.5', '0.75', '1', '1.25', '1.5', '2'] as const)
+  const [playbackRate, setPlaybackRate] = usePreference('streamhub-playback-rate', '1', PLAYBACK_RATES)
+  const requestedRateRef = useRef(playbackRate)
 
   const variants = useMemo(() => uniqueVariants(channel), [channel])
   const activeVariant = variants.find((variant) => variant.id === variantId) ?? null
@@ -287,11 +290,16 @@ export default function Player({ channel }: Props) {
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const restoreRate = () => { video.playbackRate = Number(playbackRate) }
-    video.defaultPlaybackRate = Number(playbackRate)
+    requestedRateRef.current = playbackRate
+    const restoreRate = () => {
+      const rate = Number(requestedRateRef.current)
+      if (video.defaultPlaybackRate !== rate) video.defaultPlaybackRate = rate
+      if (video.playbackRate !== rate) video.playbackRate = rate
+    }
     restoreRate()
-    video.addEventListener('loadedmetadata', restoreRate)
-    return () => video.removeEventListener('loadedmetadata', restoreRate)
+    const events = ['loadedmetadata', 'playing', 'ratechange'] as const
+    events.forEach((event) => video.addEventListener(event, restoreRate))
+    return () => events.forEach((event) => video.removeEventListener(event, restoreRate))
   }, [playbackRate, activeUrl, retryKey, usingFallback])
 
   const rememberAudio = (video: HTMLVideoElement) => {
@@ -309,7 +317,17 @@ export default function Player({ channel }: Props) {
   const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
   const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
   const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }
-  const changePlaybackRate = () => { const video = videoRef.current; if (!video) return; const rates = [0.5, 0.75, 1, 1.25, 1.5, 2]; const current = Number(video.playbackRate.toFixed(2)); const index = rates.indexOf(current); const next = rates[(index >= 0 ? index + 1 : 2) % rates.length]; video.playbackRate = next; setPlaybackRate(String(next) as typeof playbackRate) }
+  const changePlaybackRate = () => {
+    const video = videoRef.current
+    if (!video) return
+    // Cycle the user's selection, not a transient rate changed by the stream.
+    const index = PLAYBACK_RATES.indexOf(requestedRateRef.current)
+    const next = PLAYBACK_RATES[(index + 1) % PLAYBACK_RATES.length]
+    requestedRateRef.current = next
+    video.defaultPlaybackRate = Number(next)
+    video.playbackRate = Number(next)
+    setPlaybackRate(next)
+  }
   const handleVideoClick = () => { togglePlay(); scheduleHideControls() }
 
   if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>

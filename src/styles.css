@@ -101,3 +101,12 @@
 .player-modern>video{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:0;max-width:100%;max-height:100%;object-position:center}
 .player-modern:fullscreen{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;aspect-ratio:auto;margin:0;padding:0;border:0;border-radius:0;background:#000}
 .player-modern:fullscreen .player-settings-menu{max-height:calc(100dvh - 120px)}
+
+/* Fit theater playback to the viewport, including on ultrawide displays. */
+.theater-mode{--theater-header:64px;--theater-gap:16px}
+.theater-mode .watch-area{width:100%;max-width:none}
+.theater-mode .player-slot{aspect-ratio:auto;height:max(120px,calc(100vh - var(--theater-header) - var(--theater-gap) - 80px));height:max(120px,calc(100dvh - var(--theater-header) - var(--theater-gap) - 80px))}
+.theater-mode .player-screen{position:relative;inset:auto;width:100%;height:100%;min-height:0;aspect-ratio:auto}
+.theater-mode .player-screen>.video-wrapper{min-height:0;height:100%}
+@media(max-width:800px){.theater-mode{--theater-gap:8px}}
+@media(max-width:560px){.theater-mode{--theater-header:calc(58px + env(safe-area-inset-top))}.topbar .theater-toggle{display:grid}}
