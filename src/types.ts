@@ -11,6 +11,7 @@ export type ChannelVariant = {
 }
 
 export type Channel = {
+  kind?: 'live' | 'movie' | 'series'
   id: string
   name: string
   url: string

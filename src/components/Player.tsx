@@ -3,6 +3,7 @@ import { Maximize2, Minimize2, PictureInPicture2, Radio, RefreshCw, Settings2, S
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import type { Channel, ChannelVariant } from '../types'
+import { readVolume, usePreference } from '../lib/preferences'
 
 function isMpegTs(url: string) {
   const value = url.toLowerCase().split('?')[0]
@@ -53,7 +54,9 @@ export default function Player({ channel }: Props) {
   const [variantId, setVariantId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
-  const [volume, setVolume] = useState(1)
+  const [volume, setVolume] = useState(readVolume)
+  const [screenFit, setScreenFit] = usePreference('streamhub-screen-fit', 'contain', ['contain', 'cover', 'fill'] as const)
+  const [mutedPreference, setMutedPreference] = usePreference('streamhub-muted', '0', ['0', '1'] as const)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(Number.NaN)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -62,7 +65,7 @@ export default function Player({ channel }: Props) {
   const [controlsVisible, setControlsVisible] = useState(true)
   const [hlsLevels, setHlsLevels] = useState<Array<{ index: number; height: number; bitrate: number }>>([])
   const [hlsQuality, setHlsQuality] = useState(-1)
-  const [playbackRate, setPlaybackRate] = useState(1)
+  const [playbackRate, setPlaybackRate] = usePreference('streamhub-playback-rate', '1', ['0.5', '0.75', '1', '1.25', '1.5', '2'] as const)
 
   const variants = useMemo(() => uniqueVariants(channel), [channel])
   const activeVariant = variants.find((variant) => variant.id === variantId) ?? null
@@ -87,13 +90,14 @@ export default function Player({ channel }: Props) {
     setVariantId(null)
     setUsingFallback(false)
     setSettingsOpen(false)
-    setPlaybackRate(1)
     showControls()
   }, [channel?.id])
 
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
+    video.volume = readVolume()
+    video.muted = mutedPreference === '1'
     const sync = () => {
       setIsPlaying(!video.paused)
       setIsMuted(video.muted || video.volume === 0)
@@ -125,7 +129,7 @@ export default function Player({ channel }: Props) {
       const video = videoRef.current
       if (!video) return
       if (event.code === 'Space') { event.preventDefault(); void (video.paused ? safePlay(video) : video.pause()) }
-      else if (event.key.toLowerCase() === 'm') { event.preventDefault(); video.muted = !video.muted }
+      else if (event.key.toLowerCase() === 'm') { event.preventDefault(); video.muted = !video.muted; rememberAudio(video) }
       else if (event.key.toLowerCase() === 'f') { event.preventDefault(); void toggleFullscreen() }
       else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); setPlayerVolume((video.muted ? 0 : video.volume) + (event.key === 'ArrowUp' ? 0.05 : -0.05)); showControls() }
       else if (event.key === 'ArrowLeft') { event.preventDefault(); seekBy(-10) }
@@ -280,9 +284,24 @@ export default function Player({ channel }: Props) {
     }
   }, [channel, activeUrl, retryKey, usingFallback])
 
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    const restoreRate = () => { video.playbackRate = Number(playbackRate) }
+    video.defaultPlaybackRate = Number(playbackRate)
+    restoreRate()
+    video.addEventListener('loadedmetadata', restoreRate)
+    return () => video.removeEventListener('loadedmetadata', restoreRate)
+  }, [playbackRate, activeUrl, retryKey, usingFallback])
+
+  const rememberAudio = (video: HTMLVideoElement) => {
+    setMutedPreference(video.muted ? '1' : '0')
+    try { localStorage.setItem('streamhub-volume', String(video.volume)) } catch { /* Storage may be unavailable. */ }
+  }
+
   const togglePlay = () => { const video = videoRef.current; if (!video) return; if (video.paused) safePlay(video); else video.pause() }
-  const toggleMute = () => { const video = videoRef.current; if (!video) return; if (video.volume === 0) { video.volume = 0.5; video.muted = false } else video.muted = !video.muted }
-  const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false }
+  const toggleMute = () => { const video = videoRef.current; if (!video) return; if (video.volume === 0) { video.volume = 0.5; video.muted = false } else video.muted = !video.muted; rememberAudio(video) }
+  const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false; rememberAudio(video) }
   const seekBy = (delta: number) => { const video = videoRef.current; if (!video || !Number.isFinite(video.duration)) return; video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + delta)) }
   const goLive = () => { const video = videoRef.current; if (!video) return; const livePosition = Number((hlsRef.current as any)?.liveSyncPosition); if (Number.isFinite(livePosition)) video.currentTime = livePosition; else if (Number.isFinite(video.duration)) video.currentTime = Math.max(0, video.duration - 0.5) }
   const toggleFullscreen = async () => { const root = rootRef.current; if (!root) return; if (document.fullscreenElement) await document.exitFullscreen(); else await root.requestFullscreen() }
@@ -290,20 +309,18 @@ export default function Player({ channel }: Props) {
   const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
   const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
   const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }
-  const changePlaybackRate = () => { const video = videoRef.current; if (!video) return; const rates = [0.5, 0.75, 1, 1.25, 1.5, 2]; const current = Number(video.playbackRate.toFixed(2)); const index = rates.indexOf(current); const next = rates[(index >= 0 ? index + 1 : 2) % rates.length]; video.playbackRate = next; setPlaybackRate(next) }
+  const changePlaybackRate = () => { const video = videoRef.current; if (!video) return; const rates = [0.5, 0.75, 1, 1.25, 1.5, 2]; const current = Number(video.playbackRate.toFixed(2)); const index = rates.indexOf(current); const next = rates[(index >= 0 ? index + 1 : 2) % rates.length]; video.playbackRate = next; setPlaybackRate(String(next) as typeof playbackRate) }
   const handleVideoClick = () => { togglePlay(); scheduleHideControls() }
 
   if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
 
-  const fullscreenRootStyle = isFullscreen ? { width: '100vw', height: '100vh', aspectRatio: 'auto' as const, maxWidth: '100vw', maxHeight: '100vh' } : undefined
-  const fullscreenVideoStyle = isFullscreen ? { width: '100%', height: '100%', objectFit: 'contain' as const, maxWidth: '100%', maxHeight: '100%' } : undefined
 
-  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} style={fullscreenRootStyle} onFocusCapture={showControls} onPointerDown={showControls} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
-    <video ref={videoRef} controls={false} playsInline preload="auto" style={fullscreenVideoStyle} onClick={handleVideoClick} />
+  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} onFocusCapture={showControls} onPointerDown={showControls} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
+    <video ref={videoRef} controls={false} playsInline preload="auto" style={{ objectFit: screenFit }} onClick={handleVideoClick} />
     <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
     {error && <div className="video-error"><span>{error}</span><button onClick={retry}><RefreshCw size={14} /> Tentar novamente</button></div>}
     <div className="player-custom-controls" onMouseEnter={showControls} onDoubleClick={(event) => event.stopPropagation()}>
-      {Number.isFinite(duration) && duration > 0 && <input className="player-seek" aria-label="Posição" type="range" min={0} max={duration} step={0.1} value={Math.min(currentTime, duration)} onChange={(event) => { const video = videoRef.current; if (video) video.currentTime = Number(event.target.value) }} />}
+      {(channel.kind === 'movie' || channel.kind === 'series') && Number.isFinite(duration) && duration > 0 && <input className="player-seek" aria-label="Posição" type="range" min={0} max={duration} step={0.1} value={Math.min(currentTime, duration)} onChange={(event) => { const video = videoRef.current; if (video) video.currentTime = Number(event.target.value) }} />}
       <div className="player-control-row">
         <button className="player-live-action player-action" onClick={goLive} title="Ir para o ao vivo"><Radio size={14} /><span>LIVE</span></button>
         <button className="player-speed-action player-action" onClick={changePlaybackRate} title="Velocidade de reprodução">{playbackRate}x</button>
@@ -312,10 +329,17 @@ export default function Player({ channel }: Props) {
         <button className="player-action" onClick={toggleMute} title={isMuted ? 'Ativar som' : 'Silenciar'}>{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
         <div className="volume-control"><input className="player-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} onPointerDown={showControls} aria-valuetext={`${Math.round((isMuted ? 0 : volume) * 100)}%`} onChange={(event) => setPlayerVolume(Number(event.target.value))} /><span className="volume-value">{Math.round((isMuted ? 0 : volume) * 100)}%</span></div>
         <span className="player-control-spacer" />
-        {variants.length > 1 && <div className="player-settings-wrap">
-          <button className="player-action" onClick={() => { setSettingsOpen((value) => !value); showControls() }} title="Qualidade"><Settings2 size={17} /></button>
+        <div className="player-settings-wrap">
+          <button className="player-action" onClick={() => { setSettingsOpen((value) => !value); showControls() }} title="Configurações do player" aria-label="Configurações do player" aria-expanded={settingsOpen}><Settings2 size={17} /></button>
           {settingsOpen && <div className="player-settings-menu">
-            <div className="player-settings-title">Qualidade do canal</div>
+            <label className="player-settings-title" htmlFor="screen-fit">Formato da imagem</label>
+            <select id="screen-fit" className="quality-select" value={screenFit} onChange={(event) => setScreenFit(event.target.value as typeof screenFit)}>
+              <option value="contain">Ajustar — sem cortes (original)</option>
+              <option value="cover">Preencher — corta as bordas</option>
+              <option value="fill">Esticar — ocupa toda a tela</option>
+            </select>
+            <div className="quality-empty">Formato salvo automaticamente neste navegador.</div>
+            {variants.length > 1 && <div className="player-settings-title">Qualidade do canal</div>}
             {variants.map((variant) => <button key={variant.id} className={variant.id === (activeVariant?.id ?? channel.id) ? 'quality-option active' : 'quality-option'} onClick={() => selectVariant(variant)}><span>{variant.quality}</span><small>{variant.name}</small></button>)}
             {hlsLevels.length > 1 && <>
               <div className="player-settings-title">Qualidade HLS</div>
@@ -323,7 +347,7 @@ export default function Player({ channel }: Props) {
               {hlsLevels.slice().sort((a, b) => b.height - a.height).map((level) => <button key={level.index} className={hlsQuality === level.index ? 'quality-option active' : 'quality-option'} onClick={() => selectHlsQuality(level.index)}><span>{level.height ? `${level.height}p` : 'Qualidade'}</span><small>{level.bitrate ? `${Math.round(level.bitrate / 1000)} kbps` : 'HLS'}</small></button>)}
             </>}
           </div>}
-        </div>}
+        </div>
         <button className="player-action" onClick={() => void togglePiP()} title="Picture-in-Picture"><PictureInPicture2 size={17} /></button>
         <button className="player-action" onClick={() => void toggleFullscreen()} title={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}>{isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
       </div>

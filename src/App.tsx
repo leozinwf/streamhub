@@ -6,6 +6,7 @@ import { parseM3U } from './lib/m3u'
 import { clearPlaylist, loadPlaylist, savePlaylist } from './lib/storage'
 import type { Channel, MediaItem, Playlist, XtreamConnection } from './types'
 import ModernPlayer from './components/Player'
+import { usePreference } from './lib/preferences'
 import { collapseChannelVariants } from './lib/channelVariants'
 import { categorizeChannel, categorizeChannels, compareCategories } from './lib/categorize'
 
@@ -239,10 +240,8 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [selectedGroup, setSelectedGroup] = useState('Todos')
   const [selectedSubgroup, setSelectedSubgroup] = useState('Todos')
-  const [contentMode, setContentMode] = useState<'home' | 'live' | 'movie' | 'series'>('home')
-  const [categoryStyle, setCategoryStyle] = useState<'smart' | 'provider'>(() => {
-    try { return localStorage.getItem('streamhub-category-style') === 'provider' ? 'provider' : 'smart' } catch { return 'smart' }
-  })
+  const [contentMode, setContentMode] = usePreference('streamhub-library', 'home', ['home', 'live', 'movie', 'series'] as const)
+  const [categoryStyle, setCategoryStyle] = usePreference('streamhub-category-style', 'smart', ['smart', 'provider'] as const)
   const [selectedMediaCategory, setSelectedMediaCategory] = useState('Todos')
   const [selectedSeries, setSelectedSeries] = useState<MediaItem | null>(null)
   const [seriesEpisodes, setSeriesEpisodes] = useState<Channel[]>([])
@@ -256,7 +255,7 @@ export default function App() {
   const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null)
   const [recentChannels, setRecentChannels] = useState<Channel[]>([])
   const [favoriteChannels, setFavoriteChannels] = useState<Channel[]>([])
-  const [mode, setMode] = useState<'m3u' | 'xtream'>('m3u')
+  const [mode, setMode] = usePreference('streamhub-connection-mode', 'm3u', ['m3u', 'xtream'] as const)
   const [playlistUrl, setPlaylistUrl] = useState('')
   const [server, setServer] = useState('')
   const [username, setUsername] = useState('')
@@ -266,9 +265,7 @@ export default function App() {
   const [urlError, setUrlError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [theaterMode, setTheaterMode] = useState(false)
-  const [channelView, setChannelView] = useState<'grid' | 'list'>(() => {
-    try { return localStorage.getItem('streamhub-channel-view') === 'list' ? 'list' : 'grid' } catch { return 'grid' }
-  })
+  const [channelView, setChannelView] = usePreference('streamhub-channel-view', 'grid', ['grid', 'list'] as const)
   const [miniPlayer, setMiniPlayer] = useState(false)
   const playerSlotRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -285,14 +282,12 @@ export default function App() {
 
   function changeChannelView(view: 'grid' | 'list') {
     setChannelView(view)
-    try { localStorage.setItem('streamhub-channel-view', view) } catch {}
   }
 
   function changeCategoryStyle(style: 'smart' | 'provider') {
     setCategoryStyle(style)
     setSelectedGroup('Todos')
     setSelectedSubgroup('Todos')
-    try { localStorage.setItem('streamhub-category-style', style) } catch {}
   }
 
   useEffect(() => {
@@ -388,7 +383,7 @@ export default function App() {
     selectContentMode(nextMode)
     setLibraryLoading(null)
   }
-  function playMovie(item: MediaItem) { if (item.streamUrl) selectChannel({ id: item.id, name: item.name, url: item.streamUrl, group: 'Filmes', subgroup: item.category, logo: item.poster }) }
+  function playMovie(item: MediaItem) { if (item.streamUrl) selectChannel({ kind: 'movie', id: item.id, name: item.name, url: item.streamUrl, group: 'Filmes', subgroup: item.category, logo: item.poster }) }
   async function openSeries(item: MediaItem) {
     const connection = playlist?.xtream || inferXtreamConnection(playlist?.channels || [])
     if (!connection || !item.seriesId) return
@@ -398,6 +393,7 @@ export default function App() {
       if (!response.ok) throw new Error('Não foi possível carregar os episódios.')
       const data = await response.json() as { episodes?: Record<string, Array<{ id?: string | number; episode_num?: number; title?: string; container_extension?: string; info?: { movie_image?: string } }>> }
       const episodes = Object.entries(data.episodes || {}).flatMap(([season, items]) => items.map((episode, index) => ({
+        kind: 'series' as const,
         id: `episode-${item.seriesId}-${episode.id || `${season}-${index}`}`,
         name: episode.title || `${item.name} · T${season} E${episode.episode_num || index + 1}`,
         url: `${connection.server}/series/${encodeURIComponent(connection.username)}/${encodeURIComponent(connection.password)}/${episode.id}.${String(episode.container_extension || 'mp4').replace(/^\./, '')}`,
