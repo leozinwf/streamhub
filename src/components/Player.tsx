@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Maximize2, Minimize2, PictureInPicture2, Radio, RefreshCw, Settings2, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { Check, ChevronLeft, ChevronRight, Gauge, Maximize, Minimize, Pause, PictureInPicture2, Play, RectangleHorizontal, RefreshCw, RotateCcw, RotateCw, Scan, Settings, SlidersHorizontal, Volume1, Volume2, VolumeX } from 'lucide-react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import type { Channel, ChannelVariant } from '../types'
 import { readVolume, usePreference } from '../lib/preferences'
+import { groupLabel } from '../lib/groupLabel'
 
 function isMpegTs(url: string) {
   const value = url.toLowerCase().split('?')[0]
@@ -38,18 +39,72 @@ function safePlay(video: HTMLVideoElement, audible = false) {
   })
 }
 
+function formatTime(value: number) {
+  const total = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor(total / 60) % 60
+  const seconds = String(total % 60).padStart(2, '0')
+  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`
+}
+
 const PLAYBACK_RATES = ['0.5', '0.75', '1', '1.25', '1.5', '2'] as const
+const SCREEN_FITS = ['contain', 'cover', 'fill'] as const
+const SCREEN_FIT_LABELS: Record<(typeof SCREEN_FITS)[number], string> = { contain: 'Ajustar', cover: 'Preencher', fill: 'Esticar' }
+const SCREEN_FIT_HINTS: Record<(typeof SCREEN_FITS)[number], string> = { contain: 'Sem cortes (original)', cover: 'Corta as bordas', fill: 'Ocupa toda a tela' }
+/** How far back (seconds) a live channel can be rewound. The browser may keep less. */
+const DVR_BUFFER_SECONDS = 30 * 60
+/** Within this many seconds of the live edge the player counts as "ao vivo". */
+const LIVE_EDGE_TOLERANCE = 8
+
+type Timeline = { start: number; end: number; bufferedEnd: number }
+type MenuPanel = 'main' | 'quality' | 'speed' | 'fit'
+
+/** Seekable window: whole file for VOD; for live, from the oldest kept media to the live edge. */
+function readTimeline(video: HTMLVideoElement, hls: Hls | null, live: boolean): Timeline {
+  const ranges = video.buffered
+  const bufferedStart = ranges.length ? ranges.start(0) : Number.NaN
+  const bufferedEnd = ranges.length ? ranges.end(ranges.length - 1) : Number.NaN
+  const current = Number.isFinite(video.currentTime) ? video.currentTime : 0
+  if (!live) {
+    const end = Number.isFinite(video.duration) ? video.duration : Number.isFinite(bufferedEnd) ? bufferedEnd : 0
+    return { start: 0, end, bufferedEnd }
+  }
+  let edge = Number.NaN
+  let windowStart = Number.NaN
+  if (hls) {
+    const sync = hls.liveSyncPosition
+    if (sync !== null && Number.isFinite(sync)) edge = sync
+    const level = hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel] as (typeof hls.levels)[number] | undefined
+    const fragments = level?.details?.fragments
+    if (fragments?.length) windowStart = fragments[0].start
+  }
+  if (!Number.isFinite(edge)) edge = Number.isFinite(bufferedEnd) ? Math.max(0, bufferedEnd - 1.5) : current
+  edge = Math.max(edge, current)
+  const starts = [bufferedStart, windowStart, current].filter(Number.isFinite)
+  return { start: Math.min(...starts), end: edge, bufferedEnd }
+}
 
 type Props = {
   channel: Channel | null
+  theaterMode?: boolean
+  onToggleTheater?: () => void
 }
 
-export default function Player({ channel }: Props) {
+export default function Player({ channel, theaterMode = false, onToggleTheater }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const hlsRef = useRef<Hls | null>(null)
   const tsRef = useRef<ReturnType<typeof mpegts.createPlayer> | null>(null)
   const controlsHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const progressRef = useRef<HTMLDivElement>(null)
+  const settingsWrapRef = useRef<HTMLDivElement>(null)
+  const settingsOpenRef = useRef(false)
+  /** True while the viewer is watching the live edge; false after pausing or rewinding. */
+  const followLiveRef = useRef(true)
+  const isLiveRef = useRef(false)
+  const tapRevealRef = useRef(false)
+  const theaterToggleRef = useRef(onToggleTheater)
+  theaterToggleRef.current = onToggleTheater
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
   const [usingFallback, setUsingFallback] = useState(false)
@@ -57,35 +112,62 @@ export default function Player({ channel }: Props) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(readVolume)
-  const [screenFit, setScreenFit] = usePreference('streamhub-screen-fit', 'contain', ['contain', 'cover', 'fill'] as const)
+  const [screenFit, setScreenFit] = usePreference('streamhub-screen-fit', 'contain', SCREEN_FITS)
   const [mutedPreference, setMutedPreference] = usePreference('streamhub-muted', '0', ['0', '1'] as const)
   const [currentTime, setCurrentTime] = useState(0)
-  const [duration, setDuration] = useState(Number.NaN)
+  const [timeline, setTimeline] = useState<Timeline>({ start: 0, end: 0, bufferedEnd: Number.NaN })
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isPictureInPicture, setIsPictureInPicture] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [controlsVisible, setControlsVisible] = useState(true)
+  const [menuPanel, setMenuPanel] = useState<MenuPanel>('main')
+  const [controlsVisible, setControlsVisible] = useState(false)
   const [hlsLevels, setHlsLevels] = useState<Array<{ index: number; height: number; bitrate: number }>>([])
   const [hlsQuality, setHlsQuality] = useState(-1)
+  const [activeHeight, setActiveHeight] = useState(0)
+  const [scrubTime, setScrubTime] = useState<number | null>(null)
+  const [hoverPoint, setHoverPoint] = useState<{ x: number; time: number } | null>(null)
   const [playbackRate, setPlaybackRate] = usePreference('streamhub-playback-rate', '1', PLAYBACK_RATES)
   const requestedRateRef = useRef(playbackRate)
 
   const variants = useMemo(() => uniqueVariants(channel), [channel])
   const activeVariant = variants.find((variant) => variant.id === variantId) ?? null
   const activeUrl = activeVariant?.url ?? channel?.url ?? ''
+  const isLive = Boolean(channel) && channel?.kind !== 'movie' && channel?.kind !== 'series' && !isDirectVideo(activeUrl)
+  isLiveRef.current = isLive
 
   const showControls = () => {
     setControlsVisible(true)
-    if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+    scheduleHideControls()
   }
 
   const scheduleHideControls = () => {
     if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+    // Keep the controls up while the settings menu is open; it closes on outside click or Escape.
+    if (settingsOpenRef.current) return
     controlsHideTimerRef.current = setTimeout(() => {
       setControlsVisible(false)
       setSettingsOpen(false)
-    }, 1500)
+    }, 3000)
   }
+
+  useEffect(() => {
+    settingsOpenRef.current = settingsOpen
+    if (!settingsOpen) { setMenuPanel('main'); return }
+    if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+    setControlsVisible(true)
+    const onPointerDown = (event: PointerEvent) => {
+      if (settingsWrapRef.current && !settingsWrapRef.current.contains(event.target as Node)) setSettingsOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setSettingsOpen(false) }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('keydown', onKeyDown)
+      settingsOpenRef.current = false
+      scheduleHideControls()
+    }
+  }, [settingsOpen])
 
   useEffect(() => () => { if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current) }, [])
 
@@ -93,7 +175,8 @@ export default function Player({ channel }: Props) {
     setVariantId(null)
     setUsingFallback(false)
     setSettingsOpen(false)
-    showControls()
+    if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current)
+    setControlsVisible(false)
   }, [channel?.id])
 
   useEffect(() => {
@@ -106,18 +189,21 @@ export default function Player({ channel }: Props) {
       setIsMuted(video.muted || video.volume === 0)
       setVolume(video.volume)
       setCurrentTime(Number.isFinite(video.currentTime) ? video.currentTime : 0)
-      setDuration(Number.isFinite(video.duration) ? video.duration : Number.NaN)
+      setTimeline(readTimeline(video, hlsRef.current, isLiveRef.current))
     }
     const onFullscreen = () => setIsFullscreen(document.fullscreenElement === rootRef.current)
     const onEnterPiP = () => setIsPictureInPicture(true)
     const onLeavePiP = () => setIsPictureInPicture(false)
-    const events: Array<keyof HTMLMediaElementEventMap> = ['play', 'pause', 'timeupdate', 'loadedmetadata', 'durationchange', 'volumechange', 'progress', 'playing', 'waiting']
+    const events: Array<keyof HTMLMediaElementEventMap> = ['play', 'pause', 'timeupdate', 'loadedmetadata', 'durationchange', 'volumechange', 'progress', 'playing', 'waiting', 'seeked']
     events.forEach((event) => video.addEventListener(event, sync))
     document.addEventListener('fullscreenchange', onFullscreen)
     video.addEventListener('enterpictureinpicture', onEnterPiP)
     video.addEventListener('leavepictureinpicture', onLeavePiP)
+    // While paused no timeupdate fires, but the live edge keeps moving.
+    const ticker = setInterval(() => { if (video.paused) sync() }, 1000)
     sync()
     return () => {
+      clearInterval(ticker)
       events.forEach((event) => video.removeEventListener(event, sync))
       document.removeEventListener('fullscreenchange', onFullscreen)
       video.removeEventListener('enterpictureinpicture', onEnterPiP)
@@ -129,14 +215,17 @@ export default function Player({ channel }: Props) {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       if (target?.isContentEditable || target?.tagName === 'BUTTON' || target?.tagName === 'INPUT' || target?.tagName === 'SELECT' || target?.tagName === 'TEXTAREA') return
+      if (event.ctrlKey || event.metaKey || event.altKey) return
       const video = videoRef.current
       if (!video) return
-      if (event.code === 'Space') { event.preventDefault(); void (video.paused ? safePlay(video) : video.pause()) }
-      else if (event.key.toLowerCase() === 'm') { event.preventDefault(); video.muted = !video.muted; rememberAudio(video) }
-      else if (event.key.toLowerCase() === 'f') { event.preventDefault(); void toggleFullscreen() }
+      const key = event.key.toLowerCase()
+      if (event.code === 'Space' || key === 'k') { event.preventDefault(); togglePlay(); showControls() }
+      else if (key === 'm') { event.preventDefault(); video.muted = !video.muted; rememberAudio(video); showControls() }
+      else if (key === 'f') { event.preventDefault(); void toggleFullscreen() }
+      else if (key === 't' && theaterToggleRef.current) { event.preventDefault(); theaterToggleRef.current() }
       else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); setPlayerVolume((video.muted ? 0 : video.volume) + (event.key === 'ArrowUp' ? 0.05 : -0.05)); showControls() }
-      else if (event.key === 'ArrowLeft') { event.preventDefault(); seekBy(-10) }
-      else if (event.key === 'ArrowRight') { event.preventDefault(); seekBy(10) }
+      else if (event.key === 'ArrowLeft' || key === 'j') { event.preventDefault(); seekBy(-10); showControls() }
+      else if (event.key === 'ArrowRight' || key === 'l') { event.preventDefault(); seekBy(10); showControls() }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -147,6 +236,8 @@ export default function Player({ channel }: Props) {
     if (!video || !channel) return
 
     let disposed = false
+    followLiveRef.current = true
+    setActiveHeight(0)
     let mediaRecoveryAttempts = 0
     let networkRecoveryAttempts = 0
     let watchdogTimer: ReturnType<typeof setTimeout> | null = null
@@ -191,9 +282,12 @@ export default function Player({ channel }: Props) {
           isLive: true,
           url: proxyStreamUrl(url),
           cors: true,
-          liveBufferLatencyChasing: true,
-          liveBufferLatencyMaxLatency: 8,
-          liveBufferLatencyMinRemain: 2,
+          // Live catch-up is handled by the player (followLive) so pausing and
+          // rewinding are not undone by mpegts jumping back to the edge.
+          liveBufferLatencyChasing: false,
+          autoCleanupSourceBuffer: true,
+          autoCleanupMaxBackwardDuration: DVR_BUFFER_SECONDS,
+          autoCleanupMinBackwardDuration: DVR_BUFFER_SECONDS - 60,
         } as any)
         tsRef.current = player
         player.attachMediaElement(video)
@@ -222,11 +316,21 @@ export default function Player({ channel }: Props) {
         enableWorker: true,
         lowLatencyMode: false,
         startPosition: -1,
-        backBufferLength: 20,
-        maxBufferLength: 12,
-        maxMaxBufferLength: 24,
-        liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 8,
+        // Live streams often arrive unevenly. Keep enough media ahead of the
+        // playhead to absorb a short interruption instead of falling back to
+        // an older segment when loading resumes.
+        // Keep already-played media so the user can pause and rewind live
+        // channels (timeshift). The browser may evict older data earlier.
+        backBufferLength: DVR_BUFFER_SECONDS,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        liveSyncDurationCount: 2,
+        // Never auto-jump to the live edge: catching up is done by the
+        // player only while the user is following the live broadcast.
+        liveMaxLatencyDurationCount: Infinity,
+        // When the stream gets behind, catch up gently rather than seeking
+        // through the buffered timeline, which is perceived as a replay.
+        maxLiveSyncPlaybackRate: 1.15,
         manifestLoadingMaxRetry: 2,
         manifestLoadingRetryDelay: 1000,
         levelLoadingMaxRetry: 2,
@@ -239,6 +343,9 @@ export default function Player({ channel }: Props) {
       hls.attachMedia(video)
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
         if (!disposed) hls.loadSource(proxyStreamUrl(usingFallback ? xtreamTsFallback(activeUrl) || activeUrl : activeUrl))
+      })
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+        if (!disposed) setActiveHeight(hls.levels[data.level]?.height || 0)
       })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (disposed) return
@@ -302,72 +409,220 @@ export default function Player({ channel }: Props) {
     return () => events.forEach((event) => video.removeEventListener(event, restoreRate))
   }, [playbackRate, activeUrl, retryKey, usingFallback])
 
+  // Follow the live edge only while the viewer has not paused or rewound.
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !isLive) return
+    const chase = () => {
+      if (!followLiveRef.current || video.paused || video.seeking) return
+      const hls = hlsRef.current
+      if (hls) {
+        const sync = hls.liveSyncPosition
+        if (sync !== null && Number.isFinite(sync) && sync - video.currentTime > 30) video.currentTime = sync
+        return
+      }
+      if (!video.buffered.length) return
+      const end = video.buffered.end(video.buffered.length - 1)
+      if (end - video.currentTime > 8) video.currentTime = Math.max(video.currentTime, end - 2)
+    }
+    video.addEventListener('timeupdate', chase)
+    return () => video.removeEventListener('timeupdate', chase)
+  }, [isLive, activeUrl, retryKey, usingFallback])
+
   const rememberAudio = (video: HTMLVideoElement) => {
     setMutedPreference(video.muted ? '1' : '0')
     try { localStorage.setItem('streamhub-volume', String(video.volume)) } catch { /* Storage may be unavailable. */ }
   }
 
-  const togglePlay = () => { const video = videoRef.current; if (!video) return; if (video.paused) safePlay(video); else video.pause() }
-  const toggleMute = () => { const video = videoRef.current; if (!video) return; if (video.volume === 0) { video.volume = 0.5; video.muted = false } else video.muted = !video.muted; rememberAudio(video) }
-  const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false; rememberAudio(video) }
-  const seekBy = (delta: number) => { const video = videoRef.current; if (!video || !Number.isFinite(video.duration)) return; video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + delta)) }
-  const goLive = () => { const video = videoRef.current; if (!video) return; const livePosition = Number((hlsRef.current as any)?.liveSyncPosition); if (Number.isFinite(livePosition)) video.currentTime = livePosition; else if (Number.isFinite(video.duration)) video.currentTime = Math.max(0, video.duration - 0.5) }
-  const toggleFullscreen = async () => { const root = rootRef.current; if (!root) return; if (document.fullscreenElement) await document.exitFullscreen(); else await root.requestFullscreen() }
-  const togglePiP = async () => { const video = videoRef.current as HTMLVideoElement & { requestPictureInPicture?: () => Promise<PictureInPictureWindow> }; if (!video.requestPictureInPicture) return; try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture() } catch { /* unsupported/rejected */ } }
-  const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
-  const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
-  const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value) }
-  const changePlaybackRate = () => {
+  /** While behind the live edge, let hls.js keep downloading ahead so nothing is lost (timeshift). */
+  const setRecordingAhead = (enabled: boolean) => {
+    const hls = hlsRef.current
+    if (!hls) return
+    hls.config.maxBufferLength = enabled ? 600 : 30
+    hls.config.maxMaxBufferLength = enabled ? 900 : 60
+  }
+
+  const leaveLiveEdge = () => {
+    if (!isLiveRef.current) return
+    followLiveRef.current = false
+    setRecordingAhead(true)
+  }
+
+  const goLive = () => {
     const video = videoRef.current
     if (!video) return
-    // Cycle the user's selection, not a transient rate changed by the stream.
-    const index = PLAYBACK_RATES.indexOf(requestedRateRef.current)
-    const next = PLAYBACK_RATES[(index + 1) % PLAYBACK_RATES.length]
-    requestedRateRef.current = next
-    video.defaultPlaybackRate = Number(next)
-    video.playbackRate = Number(next)
-    setPlaybackRate(next)
+    followLiveRef.current = true
+    setRecordingAhead(false)
+    const sync = hlsRef.current?.liveSyncPosition
+    if (sync !== null && sync !== undefined && Number.isFinite(sync)) video.currentTime = sync
+    else if (video.buffered.length) video.currentTime = Math.max(0, video.buffered.end(video.buffered.length - 1) - 2)
+    if (video.paused) safePlay(video)
   }
-  const handleVideoClick = () => { togglePlay(); scheduleHideControls() }
+
+  const seekTo = (target: number) => {
+    const video = videoRef.current
+    if (!video) return
+    const live = isLiveRef.current
+    const { start, end } = readTimeline(video, hlsRef.current, live)
+    if (live && end - target < LIVE_EDGE_TOLERANCE) { goLive(); return }
+    let time = Math.max(start, Math.min(end, target))
+    if (live) {
+      leaveLiveEdge()
+      // MPEG-TS can only seek inside what the browser has kept.
+      if (!hlsRef.current && video.buffered.length) {
+        const first = video.buffered.start(0)
+        if (time < first) time = first + 0.5
+      }
+    }
+    video.currentTime = time
+  }
+
+  const seekBy = (delta: number) => {
+    const video = videoRef.current
+    if (!video) return
+    seekTo(video.currentTime + delta)
+  }
+
+  const togglePlay = () => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) safePlay(video)
+    else { leaveLiveEdge(); video.pause() }
+  }
+  const toggleMute = () => { const video = videoRef.current; if (!video) return; if (video.volume === 0) { video.volume = 0.5; video.muted = false } else video.muted = !video.muted; rememberAudio(video) }
+  const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false; rememberAudio(video) }
+  const toggleFullscreen = async () => { const root = rootRef.current; if (!root) return; try { if (document.fullscreenElement) await document.exitFullscreen(); else await root.requestFullscreen() } catch { /* unsupported/rejected */ } }
+  const togglePiP = async () => { const video = videoRef.current as HTMLVideoElement & { requestPictureInPicture?: () => Promise<PictureInPictureWindow> }; if (!video?.requestPictureInPicture) return; try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture() } catch { /* unsupported/rejected */ } }
+  const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
+  const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
+  const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value); setSettingsOpen(false) }
+  const selectPlaybackRate = (next: (typeof PLAYBACK_RATES)[number]) => {
+    const video = videoRef.current
+    requestedRateRef.current = next
+    if (video) { video.defaultPlaybackRate = Number(next); video.playbackRate = Number(next) }
+    setPlaybackRate(next)
+    setSettingsOpen(false)
+  }
+
+  // A tap on a touch screen while the controls are hidden only reveals them (like YouTube).
+  const handlePointerDown = (event: ReactPointerEvent) => {
+    tapRevealRef.current = event.pointerType !== 'mouse' && !controlsVisible
+    showControls()
+  }
+  const handleVideoClick = () => {
+    if (tapRevealRef.current) { tapRevealRef.current = false; return }
+    togglePlay()
+  }
+
+  // Seek bar (drag + hover preview)
+  const span = Math.max(0.001, timeline.end - timeline.start)
+  const timeAt = (clientX: number) => {
+    const rect = progressRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return timeline.start
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    return timeline.start + ratio * span
+  }
+  const onProgressDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setScrubTime(timeAt(event.clientX))
+  }
+  const onProgressMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = progressRef.current?.getBoundingClientRect()
+    const time = timeAt(event.clientX)
+    if (rect) setHoverPoint({ x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)), time })
+    if (scrubTime !== null) setScrubTime(time)
+  }
+  const onProgressUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (scrubTime === null) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    seekTo(timeAt(event.clientX))
+    setScrubTime(null)
+  }
 
   if (!channel) return <div className="empty-player"><strong>Selecione um canal para assistir</strong><span>Escolha um canal da sua biblioteca abaixo</span></div>
 
+  const displayTime = scrubTime ?? currentTime
+  const playedRatio = Math.max(0, Math.min(1, (displayTime - timeline.start) / span))
+  const bufferedRatio = Number.isFinite(timeline.bufferedEnd) ? Math.max(0, Math.min(1, (timeline.bufferedEnd - timeline.start) / span)) : 0
+  const behindLive = isLive ? Math.max(0, timeline.end - currentTime) : 0
+  const atLive = isLive && isPlaying && behindLive < LIVE_EDGE_TOLERANCE && followLiveRef.current
+  const canSeek = isLive ? timeline.end - timeline.start > 5 : timeline.end > 0
+  const labelFor = (time: number) => {
+    if (!isLive) return formatTime(time)
+    const behind = timeline.end - time
+    return behind < LIVE_EDGE_TOLERANCE ? 'Ao vivo' : `-${formatTime(behind)}`
+  }
 
-  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible ? 'controls-visible' : 'controls-hidden'}`} onFocusCapture={showControls} onPointerDown={showControls} onMouseEnter={showControls} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
+  const selectedLevel = hlsLevels.find((level) => level.index === hlsQuality)
+  const qualityValue = hlsLevels.length > 1
+    ? (selectedLevel ? `${selectedLevel.height}p` : `Automático${activeHeight ? ` (${activeHeight}p)` : ''}`)
+    : variants.length > 1 ? (activeVariant ?? variants[0]).quality : 'Única'
+  const badgeHeight = selectedLevel?.height || activeHeight
+  const qualityText = activeVariant?.quality ?? (variants.length ? variants[0].quality : '')
+  const qualityBadge = badgeHeight >= 2160 || /4k|uhd/i.test(qualityText) ? '4K' : badgeHeight >= 720 || /hd/i.test(qualityText) ? 'HD' : ''
+  const VolumeIcon = isMuted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
+
+  return <div ref={rootRef} className={`video-wrapper player-modern ${controlsVisible || !isPlaying ? 'controls-visible' : 'controls-hidden'}`} onFocusCapture={showControls} onPointerDown={handlePointerDown} onMouseMove={showControls} onMouseLeave={scheduleHideControls} onDoubleClick={() => void toggleFullscreen()}>
     <video ref={videoRef} controls={false} playsInline preload="auto" style={{ objectFit: screenFit }} onClick={handleVideoClick} />
-    <div className="now-playing"><div><strong>{channel.name}</strong><span>{channel.group}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
+    <div className="now-playing"><div><strong>{channel.name}</strong><span>{groupLabel(channel.group)}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
+    {!isPlaying && !error && <button className="player-center-play" onClick={togglePlay} onDoubleClick={(event) => event.stopPropagation()} aria-label="Reproduzir"><Play size={30} fill="currentColor" /></button>}
     {error && <div className="video-error"><span>{error}</span><button onClick={retry}><RefreshCw size={14} /> Tentar novamente</button></div>}
-    <div className="player-custom-controls" onMouseEnter={showControls} onDoubleClick={(event) => event.stopPropagation()}>
-      {(channel.kind === 'movie' || channel.kind === 'series') && Number.isFinite(duration) && duration > 0 && <input className="player-seek" aria-label="Posição" type="range" min={0} max={duration} step={0.1} value={Math.min(currentTime, duration)} onChange={(event) => { const video = videoRef.current; if (video) video.currentTime = Number(event.target.value) }} />}
-      <div className="player-control-row">
-        <button className="player-live-action player-action" onClick={goLive} title="Ir para o ao vivo"><Radio size={14} /><span>LIVE</span></button>
-        <button className="player-speed-action player-action" onClick={changePlaybackRate} title="Velocidade de reprodução">{playbackRate}x</button>
-        <button className="player-action" onClick={() => seekBy(-10)} title="Voltar 10 segundos"><SkipBack size={16} /></button>
-        <button className="player-action" onClick={() => seekBy(10)} title="Avançar 10 segundos"><SkipForward size={16} /></button>
-        <button className="player-action" onClick={toggleMute} title={isMuted ? 'Ativar som' : 'Silenciar'}>{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
-        <div className="volume-control"><input className="player-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} onPointerDown={showControls} aria-valuetext={`${Math.round((isMuted ? 0 : volume) * 100)}%`} onChange={(event) => setPlayerVolume(Number(event.target.value))} /><span className="volume-value">{Math.round((isMuted ? 0 : volume) * 100)}%</span></div>
-        <span className="player-control-spacer" />
-        <div className="player-settings-wrap">
-          <button className="player-action" onClick={() => { setSettingsOpen((value) => !value); showControls() }} title="Configurações do player" aria-label="Configurações do player" aria-expanded={settingsOpen}><Settings2 size={17} /></button>
-          {settingsOpen && <div className="player-settings-menu">
-            <label className="player-settings-title" htmlFor="screen-fit">Formato da imagem</label>
-            <select id="screen-fit" className="quality-select" value={screenFit} onChange={(event) => setScreenFit(event.target.value as typeof screenFit)}>
-              <option value="contain">Ajustar — sem cortes (original)</option>
-              <option value="cover">Preencher — corta as bordas</option>
-              <option value="fill">Esticar — ocupa toda a tela</option>
-            </select>
-            <div className="quality-empty">Formato salvo automaticamente neste navegador.</div>
-            {variants.length > 1 && <div className="player-settings-title">Qualidade do canal</div>}
-            {variants.map((variant) => <button key={variant.id} className={variant.id === (activeVariant?.id ?? channel.id) ? 'quality-option active' : 'quality-option'} onClick={() => selectVariant(variant)}><span>{variant.quality}</span><small>{variant.name}</small></button>)}
-            {hlsLevels.length > 1 && <>
-              <div className="player-settings-title">Qualidade HLS</div>
-              <button className={hlsQuality === -1 ? 'quality-option active' : 'quality-option'} onClick={() => selectHlsQuality(-1)}><span>Automático</span><small>Seleção adaptativa</small></button>
-              {hlsLevels.slice().sort((a, b) => b.height - a.height).map((level) => <button key={level.index} className={hlsQuality === level.index ? 'quality-option active' : 'quality-option'} onClick={() => selectHlsQuality(level.index)}><span>{level.height ? `${level.height}p` : 'Qualidade'}</span><small>{level.bitrate ? `${Math.round(level.bitrate / 1000)} kbps` : 'HLS'}</small></button>)}
+    <div className="shp-controls" onDoubleClick={(event) => event.stopPropagation()}>
+      {canSeek && <div ref={progressRef} className={`shp-progress ${scrubTime !== null ? 'dragging' : ''}`} role="slider" aria-label={isLive ? 'Linha do tempo do ao vivo' : 'Posição'} aria-valuemin={0} aria-valuemax={Math.round(span)} aria-valuenow={Math.round(displayTime - timeline.start)} aria-valuetext={labelFor(displayTime)} tabIndex={-1} onPointerDown={onProgressDown} onPointerMove={onProgressMove} onPointerUp={onProgressUp} onPointerCancel={() => setScrubTime(null)} onPointerLeave={() => setHoverPoint(null)}>
+        <div className="shp-progress-track">
+          <div className="shp-progress-buffered" style={{ width: `${bufferedRatio * 100}%` }} />
+          <div className="shp-progress-played" style={{ width: `${playedRatio * 100}%` }} />
+          <div className="shp-progress-thumb" style={{ left: `${playedRatio * 100}%` }} />
+        </div>
+        {(hoverPoint || scrubTime !== null) && <div className="shp-progress-tooltip" style={{ left: scrubTime !== null ? `${playedRatio * 100}%` : hoverPoint!.x }}>{labelFor(scrubTime ?? hoverPoint!.time)}</div>}
+      </div>}
+      <div className="shp-bar">
+        <button className="shp-btn" onClick={togglePlay} title={isPlaying ? 'Pausar (k)' : 'Reproduzir (k)'} aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}>{isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}</button>
+        {canSeek && <button className="shp-btn shp-hide-sm" onClick={() => seekBy(-10)} title="Voltar 10 segundos (j)" aria-label="Voltar 10 segundos"><RotateCcw size={19} /></button>}
+        {canSeek && <button className="shp-btn shp-hide-sm" onClick={() => seekBy(10)} title="Avançar 10 segundos (l)" aria-label="Avançar 10 segundos" disabled={isLive && atLive}><RotateCw size={19} /></button>}
+        <div className="shp-volume-group">
+          <button className="shp-btn" onClick={toggleMute} title={isMuted ? 'Ativar som (m)' : 'Desativar som (m)'} aria-label={isMuted ? 'Ativar som' : 'Desativar som'}><VolumeIcon size={21} /></button>
+          <input className="shp-volume" aria-label="Volume" type="range" min={0} max={1} step={0.01} value={isMuted ? 0 : volume} aria-valuetext={`${Math.round((isMuted ? 0 : volume) * 100)}%`} onChange={(event) => setPlayerVolume(Number(event.target.value))} style={{ ['--vol' as string]: `${(isMuted ? 0 : volume) * 100}%` }} />
+        </div>
+        {isLive
+          ? <>
+            {!atLive && behindLive >= LIVE_EDGE_TOLERANCE && <span className="shp-time">-{formatTime(behindLive)}</span>}
+            <button className={`shp-live ${atLive ? 'is-live' : ''}`} onClick={goLive} title={atLive ? 'Você está assistindo ao vivo' : 'Ir para o ao vivo'} aria-label={atLive ? 'Ao vivo' : 'Ir para o ao vivo'}><span className="shp-live-dot" />Ao vivo</button>
+          </>
+          : <span className="shp-time">{formatTime(displayTime)} / {formatTime(timeline.end)}</span>}
+        <span className="shp-spacer" />
+        <div className="shp-settings" ref={settingsWrapRef}>
+          <button className="shp-btn" onClick={() => { setSettingsOpen((value) => !value); showControls() }} title="Configurações" aria-label="Configurações" aria-expanded={settingsOpen}><Settings size={21} className={settingsOpen ? 'shp-spin' : ''} />{qualityBadge && <span className="shp-badge">{qualityBadge}</span>}</button>
+          {settingsOpen && <div className="shp-menu" role="menu">
+            {menuPanel === 'main' && <>
+              <button className="shp-menu-item" role="menuitem" onClick={() => setMenuPanel('quality')}><SlidersHorizontal size={18} /><span className="shp-menu-label">Qualidade</span><span className="shp-menu-value">{qualityValue}<ChevronRight size={16} /></span></button>
+              <button className="shp-menu-item" role="menuitem" onClick={() => setMenuPanel('speed')}><Gauge size={18} /><span className="shp-menu-label">Velocidade da reprodução</span><span className="shp-menu-value">{playbackRate === '1' ? 'Normal' : `${playbackRate}x`}<ChevronRight size={16} /></span></button>
+              <button className="shp-menu-item" role="menuitem" onClick={() => setMenuPanel('fit')}><Scan size={18} /><span className="shp-menu-label">Formato da imagem</span><span className="shp-menu-value">{SCREEN_FIT_LABELS[screenFit]}<ChevronRight size={16} /></span></button>
+            </>}
+            {menuPanel !== 'main' && <button className="shp-menu-item shp-menu-head" onClick={() => setMenuPanel('main')}><ChevronLeft size={18} /><span className="shp-menu-label">{menuPanel === 'quality' ? 'Qualidade' : menuPanel === 'speed' ? 'Velocidade da reprodução' : 'Formato da imagem'}</span></button>}
+            {menuPanel === 'quality' && <>
+              {variants.length > 1 && <>
+                <div className="shp-menu-section">Versão do canal</div>
+                {variants.map((variant) => { const active = variant.id === (activeVariant?.id ?? variants[0].id); return <button key={variant.id} className="shp-menu-item" role="menuitemradio" aria-checked={active} onClick={() => selectVariant(variant)}><span className="shp-check">{active && <Check size={17} />}</span><span className="shp-menu-label">{variant.quality}</span><span className="shp-menu-value">{variant.name}</span></button> })}
+              </>}
+              {hlsLevels.length > 1 && <>
+                {variants.length > 1 && <div className="shp-menu-section">Resolução</div>}
+                {hlsLevels.slice().sort((a, b) => b.height - a.height).map((level) => <button key={level.index} className="shp-menu-item" role="menuitemradio" aria-checked={hlsQuality === level.index} onClick={() => selectHlsQuality(level.index)}><span className="shp-check">{hlsQuality === level.index && <Check size={17} />}</span><span className="shp-menu-label">{level.height ? `${level.height}p` : 'Qualidade'}{level.height >= 720 && <sup className="shp-sup">HD</sup>}</span><span className="shp-menu-value">{level.bitrate ? `${Math.round(level.bitrate / 1000)} kbps` : ''}</span></button>)}
+                <button className="shp-menu-item" role="menuitemradio" aria-checked={hlsQuality === -1} onClick={() => selectHlsQuality(-1)}><span className="shp-check">{hlsQuality === -1 && <Check size={17} />}</span><span className="shp-menu-label">Automático{activeHeight ? ` (${activeHeight}p)` : ''}</span></button>
+              </>}
+              {variants.length <= 1 && hlsLevels.length <= 1 && <div className="shp-menu-note">Este canal não oferece outras qualidades.</div>}
+            </>}
+            {menuPanel === 'speed' && PLAYBACK_RATES.map((rate) => <button key={rate} className="shp-menu-item" role="menuitemradio" aria-checked={playbackRate === rate} onClick={() => selectPlaybackRate(rate)}><span className="shp-check">{playbackRate === rate && <Check size={17} />}</span><span className="shp-menu-label">{rate === '1' ? 'Normal' : `${rate}x`}</span></button>)}
+            {menuPanel === 'fit' && <>
+              {SCREEN_FITS.map((fit) => <button key={fit} className="shp-menu-item" role="menuitemradio" aria-checked={screenFit === fit} onClick={() => { setScreenFit(fit); setSettingsOpen(false) }}><span className="shp-check">{screenFit === fit && <Check size={17} />}</span><span className="shp-menu-label">{SCREEN_FIT_LABELS[fit]}</span><span className="shp-menu-value">{SCREEN_FIT_HINTS[fit]}</span></button>)}
+              <div className="shp-menu-note">Salvo automaticamente neste navegador.</div>
             </>}
           </div>}
         </div>
-        <button className="player-action" onClick={() => void togglePiP()} title="Picture-in-Picture"><PictureInPicture2 size={17} /></button>
-        <button className="player-action" onClick={() => void toggleFullscreen()} title={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}>{isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
+        {onToggleTheater && <button className={`shp-btn shp-hide-sm ${theaterMode ? 'active' : ''}`} onClick={onToggleTheater} title={theaterMode ? 'Visualização padrão (t)' : 'Modo teatro (t)'} aria-label={theaterMode ? 'Visualização padrão' : 'Modo teatro'} aria-pressed={theaterMode}><RectangleHorizontal size={theaterMode ? 18 : 22} /></button>}
+        <button className="shp-btn shp-hide-xs" onClick={() => void togglePiP()} title={isPictureInPicture ? 'Sair do miniplayer' : 'Miniplayer (Picture-in-Picture)'} aria-label="Picture-in-Picture"><PictureInPicture2 size={19} /></button>
+        <button className="shp-btn" onClick={() => void toggleFullscreen()} title={isFullscreen ? 'Sair da tela cheia (f)' : 'Tela cheia (f)'} aria-label={isFullscreen ? 'Sair da tela cheia' : 'Tela cheia'}>{isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}</button>
       </div>
     </div>
   </div>

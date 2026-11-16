@@ -20,7 +20,8 @@ async function requestBody(incoming: any, method: string) {
 export async function handleNodeRequest(incoming: any, outgoing: any, handle: WebHandler): Promise<void> {
   try {
     const forwardedProtocol = incoming.headers?.['x-forwarded-proto']
-    const protocol = Array.isArray(forwardedProtocol) ? forwardedProtocol[0] : forwardedProtocol || 'https'
+    // Sem proxy na frente (ex.: npm start local) a conexão é HTTP puro; assumir https quebrava os links do manifesto.
+    const protocol = (Array.isArray(forwardedProtocol) ? forwardedProtocol[0] : forwardedProtocol)?.split(',')[0].trim() || (incoming.socket?.encrypted ? 'https' : 'http')
     const host = incoming.headers?.host || 'localhost'
     const headers = new Headers()
     for (const [key, value] of Object.entries(incoming.headers || {})) {
@@ -38,13 +39,33 @@ export async function handleNodeRequest(incoming: any, outgoing: any, handle: We
     response.headers.forEach((value, key) => outgoing.setHeader(key, value))
     if (response.body) {
       const reader = response.body.getReader()
+      // Quando o navegador troca de canal ou fecha a aba, cancela a leitura e
+      // libera a conexão com o IPTV (muitos provedores só permitem 1 conexão).
+      let clientGone = false
+      const onClose = () => {
+        if (outgoing.writableFinished) return
+        clientGone = true
+        void reader.cancel().catch(() => undefined)
+      }
+      outgoing.on?.('close', onClose)
       try {
-        while (true) {
+        while (!clientGone) {
           const { done, value } = await reader.read()
-          if (done) break
-          outgoing.write(value)
+          if (done || clientGone) break
+          const flushed = outgoing.write(value)
+          if (!flushed && !clientGone) await new Promise<void>((resolve) => {
+            const done = () => { outgoing.off?.('drain', done); outgoing.off?.('close', done); resolve() }
+            outgoing.once?.('drain', done)
+            outgoing.once?.('close', done)
+          })
         }
-      } finally { reader.releaseLock() }
+      } catch (error) {
+        if (!clientGone) throw error
+      } finally {
+        outgoing.off?.('close', onClose)
+        try { reader.releaseLock() } catch { /* stream already cancelled */ }
+      }
+      if (clientGone) return
     }
     outgoing.end()
   } catch (error) {

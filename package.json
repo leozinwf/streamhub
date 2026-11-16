@@ -1,7 +1,10 @@
 {
   "name": "streamhub",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "Player de IPTV/M3U no estilo YouTube",
+  "author": "Leonardo Morais",
+  "main": "electron/app/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,16 +12,23 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc -b --noEmit",
-    "start": "tsx server/index.ts"
+    "start": "tsx server/index.ts",
+    "serve": "npm run build && npm start",
+    "desktop:prepare": "vite build && node scripts/build-desktop-server.mjs",
+    "desktop": "npm run desktop:prepare && electron .",
+    "desktop:exe": "npm run desktop:prepare && electron-builder --win",
+    "desktop:release": "npm run desktop:prepare && electron-builder --win --publish always"
   },
   "dependencies": {
     "cors": "^2.8.6",
+    "electron-updater": "^6.8.11",
     "express": "^5.2.1",
     "hls.js": "^1.6.13",
     "lucide-react": "^0.468.0",
     "mpegts.js": "^1.8.2",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tsx": "^4.23.13"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
@@ -26,8 +36,58 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
-    "tsx": "^4.23.13",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.5"
+  },
+  "build": {
+    "appId": "com.streamhub.desktop",
+    "productName": "StreamHub",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/app/**/*",
+      "electron/icon.png",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "StreamHub",
+      "artifactName": "StreamHub-Instalador-${version}.exe"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "leozinwf",
+        "repo": "streamhub",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leozinwf/streamhub.git"
   }
 }

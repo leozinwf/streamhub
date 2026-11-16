@@ -79,10 +79,23 @@ export async function handleStream(req: Request): Promise<Response> {
     const contentType = upstream.headers.get('content-type') || ''
     const contentLength = upstream.headers.get('content-length') || ''
     const finalUrl = new URL(upstream.url || target.toString())
+    const diagnostic = {
+  timestamp: new Date().toISOString(),
+  originalHost: target.hostname,
+  finalHost: finalUrl.hostname,
+  redirected: target.origin !== finalUrl.origin,
+  status: upstream.status,
+  contentType: upstream.headers.get('content-type'),
+  contentLength: upstream.headers.get('content-length'),
+};
+
+console.log('[STREAM DIAGNOSTIC]', diagnostic);
     const contentDisposition = upstream.headers.get('content-disposition') || ''
     const looksLikeManifestUrl = /\.m3u8(?:$|\?)/i.test(target.pathname + target.search) || /\.m3u8(?:$|\?)/i.test(finalUrl.pathname + finalUrl.search)
     const looksLikeText = /text\//i.test(contentType) || /mpegurl/i.test(contentType)
-    const isManifest = looksLikeManifestUrl || looksLikeText || /\.m3u8/i.test(contentDisposition)
+    // Segmentos de vídeo nunca são manifesto, mesmo que o servidor mande um content-type errado (ex.: text/...).
+    const looksLikeSegment = /\.(?:ts|m2ts|m4s|mp4|m4v|aac|mp3|vtt|webm|mkv)(?:$|\?)/i.test(finalUrl.pathname)
+    const isManifest = looksLikeManifestUrl || (!looksLikeSegment && (looksLikeText || /\.m3u8/i.test(contentDisposition)))
 
     if (isManifest) {
       const length = Number(contentLength || 0)

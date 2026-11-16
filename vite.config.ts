@@ -53,7 +53,7 @@ function localApi(): Plugin {
               body?.set(chunk, offset)
               offset += chunk.byteLength
             }
-            const request = new Request(`http://localhost:5173${req.url ?? ''}`, { method, headers, body })
+            const request = new Request(`http://${req.headers?.host ?? 'localhost:5173'}${req.url ?? ''}`, { method, headers, body })
             const response = await handler(request)
             await sendResponse(response, res, route === '/api/stream' || route === '/api/export')
           } catch (error) {
