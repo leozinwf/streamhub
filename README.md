@@ -46,6 +46,10 @@ e se atualiza sozinho pelas *Releases* do GitHub.
   Na primeira vez pede um token do GitHub (permissão `public_repo`), salvo em `.gh-token` (fora do Git).
 - **Atualização automática:** o app instalado verifica novas versões ao abrir e a cada 4 horas,
   baixa em segundo plano e oferece reiniciar. Se o usuário escolher "Depois", instala ao fechar.
+- **Arquivos publicados:** `StreamHub-Instalador-<versão>.exe` (se atualiza sozinho) e
+  `StreamHub-Portatil-<versão>.exe` (roda sem instalar; avisa quando há versão nova e abre a página de download).
+- **Notas da release:** criadas por `scripts/publish-release.mjs` a partir de `build/release-notes.md`
+  (qual arquivo baixar, como liberar no Windows). O `.bat` pergunta as novidades da versão (itens separados por `;`).
 - **Gerar só um instalador local (sem publicar):** `Gerar StreamHub.exe.bat` ou `npm run desktop:exe`.
 - **Testar sem instalador:** `npm run desktop`.
 

@@ -7,11 +7,11 @@ echo  [1/2] Instalando dependencias (so demora na primeira vez)...
 call npm install --no-audit --no-fund
 if errorlevel 1 goto erro
 echo.
-echo  [2/2] Gerando o instalador do StreamHub (sem publicar)...
+echo  [2/2] Gerando o instalador e a versao portatil do StreamHub (sem publicar)...
 call npm run desktop:exe
 if errorlevel 1 goto erro
 echo.
-echo  Pronto! O instalador esta na pasta "release".
+echo  Pronto! O instalador e a versao portatil estao na pasta "release".
 start "" "%~dp0release"
 pause
 exit /b 0

@@ -61,10 +61,16 @@ if errorlevel 1 echo  Aviso: o push falhou. A versao sera publicada mesmo assim;
 echo.
 
 :release
-rem Cria a release antes de enviar os arquivos (evita duas criacoes ao mesmo tempo).
-curl -s -o nul -X POST -H "Authorization: token %GH_TOKEN%" -H "Accept: application/vnd.github+json" https://api.github.com/repos/%REPO%/releases -d "{\"tag_name\":\"v%VERSAO%\",\"name\":\"%VERSAO%\",\"draft\":false}"
-
-echo  [4/4] Gerando o instalador e enviando para o GitHub...
+echo  Novidades desta versao (opcional). Separe os itens com ponto e virgula ";"
+echo  Exemplo: Nova pagina inicial; Correcao no player
+set "NOVIDADES="
+set /p "NOVIDADES= Novidades: "
+set "STREAMHUB_NEWS=%NOVIDADES%"
+rem Cria (ou atualiza) a release com as notas antes de enviar os arquivos.
+call node scripts\publish-release.mjs
+if errorlevel 1 goto erro
+echo.
+echo  [4/4] Gerando o instalador e a versao portatil e enviando para o GitHub...
 call npm run desktop:release
 if errorlevel 1 goto erro
 echo.

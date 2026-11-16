@@ -641,7 +641,7 @@ export default function App() {
       groupCounts={groupCounts}
       groupOf={groupName}
       isFavorite={isFavoriteChannel}
-      onPlay={(channel) => { selectContentMode('live'); setSelectedGroup('Todos'); setSelectedSubgroup('Todos'); setMosaicMode('0'); selectChannel(channel); window.scrollTo({ top: 0 }) }}
+      onPlay={(channel) => { autoRecommendRef.current = true; selectContentMode('live'); setSelectedGroup('Todos'); setSelectedSubgroup('Todos'); setMosaicMode('0'); selectChannel(channel); window.scrollTo({ top: 0 }) }}
       onPlayMovie={(item) => { selectContentMode('movie'); playMovie(item); window.scrollTo({ top: 0 }) }}
       onOpenSeries={(item) => { selectContentMode('series'); void openSeries(item); window.scrollTo({ top: 0 }) }}
       onOpenLibrary={(nextMode) => void openLibrary(nextMode)}

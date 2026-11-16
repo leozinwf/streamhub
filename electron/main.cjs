@@ -85,6 +85,25 @@ function setupAutoUpdates() {
     if (response === 0) autoUpdater.quitAndInstall()
   })
   autoUpdater.on('error', (error) => console.warn('[StreamHub] Falha ao verificar atualizações:', error?.message || error))
+  // The portable version can't replace itself: just tell the user and open the download page.
+  if (process.env.PORTABLE_EXECUTABLE_FILE) {
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = false
+    autoUpdater.on('update-available', async (info) => {
+      if (asked) return
+      asked = true
+      const { response } = await dialog.showMessageBox(mainWindow ?? undefined, {
+        type: 'info',
+        title: 'Atualização do StreamHub',
+        message: `A versão ${info.version} do StreamHub está disponível.`,
+        detail: 'Esta é a versão portátil, que não se atualiza sozinha. Baixe a versão nova na página do StreamHub (ou use o instalador, que se atualiza automaticamente).',
+        buttons: ['Abrir página de download', 'Agora não'],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      if (response === 0) void shell.openExternal('https://github.com/leozinwf/streamhub/releases/latest')
+    })
+  }
   const check = () => { autoUpdater.checkForUpdates().catch(() => undefined) }
   setTimeout(check, 5000)
   setInterval(check, 4 * 60 * 60 * 1000)

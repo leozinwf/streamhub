@@ -1,7 +1,7 @@
 {
   "name": "streamhub",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Player de IPTV/M3U no estilo YouTube",
   "author": "Leonardo Morais",
   "main": "electron/app/main.cjs",
@@ -64,6 +64,12 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico"
@@ -84,7 +90,10 @@
         "repo": "streamhub",
         "releaseType": "release"
       }
-    ]
+    ],
+    "portable": {
+      "artifactName": "StreamHub-Portatil-${version}.exe"
+    }
   },
   "repository": {
     "type": "git",

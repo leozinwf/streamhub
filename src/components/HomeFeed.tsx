@@ -79,7 +79,8 @@ function Artwork({ src, name, className }: { src?: string; name: string; classNa
 
 export function ChannelCard({ channel, group, favorite, onPlay, onToggleFavorite, active = false, extra }: { channel: Channel; group: string; favorite: boolean; onPlay: () => void; onToggleFavorite: () => void; active?: boolean; extra?: ReactNode }) {
   const hue = hueFor(channel.name)
-  const qualities = channel.variants?.map((variant) => variant.quality).filter(Boolean) ?? []
+  // Only real quality labels, without repeats (versions without a label show as "Qualidade").
+  const qualities = Array.from(new Set(channel.variants?.map((variant) => variant.quality).filter((quality) => quality && quality !== 'Qualidade') ?? []))
   return <article className={active ? 'yt-card is-active' : 'yt-card'}>
     <button className="yt-thumb" onClick={onPlay} style={{ ['--hue' as string]: hue }} aria-label={`Assistir ${channel.name}`} aria-current={active || undefined}>
       {channel.logo && <img className="yt-thumb-backdrop" src={channel.logo} alt="" loading="lazy" aria-hidden="true" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = 'none' }} />}

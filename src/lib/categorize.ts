@@ -59,6 +59,8 @@ export function categorizeChannel(channel: Channel): Channel {
   else if (isForeignChannel(channel)) category = 'Internacionais'
   // Streaming/event channels (Disney+, Max, Prime…) often carry football and big events.
   else if (matches(text, /(disney ?(\+|plus)|hbo ?max|^max\b|\bmax ?\d|prime video|amazon prime|paramount ?(\+|plus)|star ?(\+|plus)|apple ?tv|globoplay|netflix|\bppv\b|pay per view|nosso futebol|caze ?tv|eventos?)/)) category = 'Streaming e Eventos'
+  // 24-hour loop channels ("Series [24H]", "Desenhos 24h") are their own kind, not regular movie/kids channels.
+  else if (matches(text, /\b(24h|24 horas|24\/7)\b/)) category = 'Canais 24h'
   else if (matches(text, /\b(sport|esporte|futebol|soccer|premiere|combate|ufc|nba|nfl|nhl|mlb|formula ?1|f1|espn|sportv|sportynet|dazn|bandsports|tnt sports|copinha|estaduais|jogos? do dia|jogos? e eventos|eventos? de hoje|goat)\b/)) category = 'Esportes'
   else if (matches(text, /\b(news|noticias?|jornal|cnn|globonews|record news|band news|jovem pan|jp news|bbc world|euronews)\b/)) category = 'Notícias'
   else if (matches(text, /\b(kids|infantil|infantis|crianca|desenho|cartoon|disney|nickelodeon|nick jr|discovery kids|gloob|tooncast|baby tv)\b/)) category = 'Infantil'
@@ -66,7 +68,6 @@ export function categorizeChannel(channel: Channel): Channel {
   else if (matches(text, /\b(filme|movie|cinema|series|serie|legendado|amazon prime|prime video|hbo|telecine|cinemax|megapix|paramount|warner|sony|universal tv|studio universal|star channel|amc|axn|space|tnt)\b/)) category = 'Filmes e Séries'
   else if (matches(text, /\b(music|musica|radio|radios|rock in rio|mtv|multishow|bis|trace|vh1)\b/)) category = 'Música'
   else if (matches(text, /\b(religiao|religiosos?|religiosas?|gospel|igreja|canção nova|cancao nova|rede vida|aparecida|novo tempo|r.?r.? soares)\b/)) category = 'Religiosos'
-  else if (matches(text, /\b(24h|24 horas|24\/7)\b/)) category = 'Canais 24h'
   else if (matches(text, /\b(aberto|abertos|globo|sbt|record|band|rede tv|redetv|tv brasil|cultura|gazeta|futura)\b/)) category = 'TV Aberta'
   else if (matches(text, /\b(entretenimento|variedades|reality|comedia|comedy|food|lifestyle|viagem|travel|tlc|viva|gnt|discovery home)\b/)) category = 'Entretenimento'
   else if (originalGroup.includes('|')) category = 'Entretenimento'
