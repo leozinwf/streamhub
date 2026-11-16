@@ -1,9 +1,10 @@
 {
   "name": "streamhub",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Player de IPTV/M3U no estilo YouTube",
   "author": "Leonardo Morais",
+  "license": "GPL-3.0-or-later",
   "main": "electron/app/main.cjs",
   "type": "module",
   "scripts": {
@@ -102,5 +103,9 @@
   "overrides": {
     "minimatch@^9.0.0": "^11.0.8",
     "minimatch@^10.0.0": "^11.0.8"
+  },
+  "homepage": "https://github.com/leozinwf/streamhub",
+  "bugs": {
+    "url": "https://github.com/leozinwf/streamhub/issues"
   }
 }

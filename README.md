@@ -1,5 +1,9 @@
 # StreamHub
 
+[![Última versão](https://img.shields.io/github/v/release/leozinwf/streamhub?label=vers%C3%A3o)](https://github.com/leozinwf/streamhub/releases/latest)
+[![Licença: GPL v3](https://img.shields.io/badge/licen%C3%A7a-GPL--3.0-blue)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/leozinwf/streamhub/total?label=downloads)](https://github.com/leozinwf/streamhub/releases)
+
 **Player de IPTV para Windows e navegador, com visual inspirado no YouTube.**
 Use a sua própria lista M3U ou o seu acesso IPTV e assista aos seus canais, filmes e séries numa interface
 organizada, com recomendações, guia de programação e um player completo.
@@ -170,3 +174,19 @@ Os apps instalados verificam atualizações ao abrir e a cada 4 horas.
 ### Tecnologias
 
 React 18 · TypeScript · Vite · hls.js · mpegts.js · Express · Electron · electron-builder · electron-updater
+
+---
+
+## Contribuindo
+
+O StreamHub é open source e contribuições são bem-vindas: relatar problemas, sugerir ideias ou enviar código.
+Veja o [guia de contribuição](CONTRIBUTING.md) e use as [Issues](https://github.com/leozinwf/streamhub/issues) para falar com o projeto.
+
+## Licença
+
+Copyright © 2026 Leonardo Morais.
+
+O StreamHub é software livre: você pode usar, estudar, modificar e redistribuir o código nos termos da
+[GNU General Public License v3.0 ou posterior](LICENSE). Versões modificadas que forem distribuídas também
+precisam ter o código aberto, sob a mesma licença.
+
