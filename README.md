@@ -56,3 +56,12 @@ e se atualiza sozinho pelas *Releases* do GitHub.
 Como funciona: `electron/main.cjs` é empacotado com o servidor (`server/app.ts`, o mesmo do deploy web)
 e o `electron-updater` em `electron/app/main.cjs`. Ao abrir, liga o servidor em `http://127.0.0.1:51730`
 e mostra a janela. A porta é fixa porque a playlist e as preferências ficam salvas por endereço.
+
+## Segurança das dependências
+
+- Verificar: `npm audit` (deve mostrar `found 0 vulnerabilities`). Corrigir o que for compatível: `npm audit fix`.
+- O `package.json` tem `overrides` para o `minimatch`: o `electron-builder` ainda puxa as versões 9.x/10.x,
+  vulneráveis (GHSA-g3hv-75wg-m249), e elas são trocadas pela 11.x corrigida. As versões 3.x/5.x, usadas por
+  outras partes do `electron-builder` e não afetadas, continuam como estão. Quando o `electron-builder` atualizar
+  essa dependência, os `overrides` podem ser removidos.
+
