@@ -68,8 +68,22 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
+      - name: Versão de teste (pré-release "firestick-teste")
+        if: github.ref == 'refs/heads/firestick-apk' && github.event_name != 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Link fixo para baixar no Fire TV pelo app Downloader:
+          # https://github.com/leozinwf/streamhub/releases/download/firestick-teste/StreamHub-FireTV.apk
+          cp android/app/build/outputs/apk/release/StreamHub-FireTV-*.apk "$RUNNER_TEMP/StreamHub-FireTV.apk"
+          if ! gh release view firestick-teste >/dev/null 2>&1; then
+            gh release create firestick-teste --prerelease --target "$GITHUB_SHA" --title "Fire TV (teste)" \
+              --notes "APK de teste do StreamHub para Fire TV / Android TV, gerado automaticamente a partir do branch firestick-apk."
+          fi
+          gh release upload firestick-teste "$RUNNER_TEMP/StreamHub-FireTV.apk" --clobber
+
       - name: Anexar à release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' && github.event.release.tag_name != 'firestick-teste'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
