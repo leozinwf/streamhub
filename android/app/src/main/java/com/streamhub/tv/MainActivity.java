@@ -98,6 +98,12 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage message) {
+                Log.d("StreamHubJS", message.messageLevel() + " " + message.message() + " (" + message.sourceId() + ":" + message.lineNumber() + ")");
+                return true;
+            }
+
+            @Override
             public Bitmap getDefaultVideoPoster() {
                 // Sem o ícone cinza de "play" do Android antes do vídeo começar.
                 return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
