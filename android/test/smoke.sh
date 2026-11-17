@@ -2,7 +2,6 @@
 # Teste do APK num emulador de TV (usado pelo workflow). Imprime as telas em base64 no log.
 set -u
 pip install --quiet --break-system-packages pillow 2>/dev/null || pip install --quiet pillow
-(cd /tmp && npm install --silent --no-audit --no-fund playwright-core@1 >/dev/null 2>&1)
 cp android/test/smoke-cdp.mjs /tmp/smoke-cdp.mjs
 
 shot() {
@@ -38,6 +37,7 @@ shot foco-no-campo-sem-teclado
 key KEYCODE_DPAD_CENTER
 shot teclado-aberto
 adb shell input text "https://raw.githubusercontent.com/leozinwf/streamhub/firestick-apk/android/test/teste.m3u"; sleep 1
+cdp estado
 key KEYCODE_ENTER; sleep 8
 cdp estado
 shot home
