@@ -805,3 +805,11 @@ h1,h2,.brand,.gateway-brand strong,.home-selector button strong{font-family:var(
 .yt-panel-sub{max-width:180px;overflow:hidden;color:#aaa;font-size:12px;font-weight:400;text-overflow:ellipsis}
 .yt-reco-head{grid-column:1 / -1;padding:10px 8px 4px;color:#f1f1f1;font-size:14px;font-weight:700}
 .yt-reco-head:first-child{padding-top:2px}
+
+/* Modo TV (app do Fire TV): destaque bem visível no item selecionado pelo controle remoto. */
+.tv,.tv *{cursor:none!important}
+.tv :focus{outline:3px solid #fff!important;outline-offset:2px;box-shadow:0 0 0 6px rgba(28,108,255,.55)!important}
+.tv .yt-thumb:focus,.tv .channel-card:focus .channel-thumb{outline:4px solid #fff!important;outline-offset:-4px!important;box-shadow:inset 0 0 0 8px rgba(28,108,255,.55)!important;filter:brightness(1.15)}
+.tv .channel-card:focus{outline:none!important;box-shadow:none!important}
+.tv .yt-thumb:focus .thumb-play,.tv .channel-card:focus .thumb-play{opacity:1;transform:scale(1)}
+.tv input:focus{outline-offset:0}

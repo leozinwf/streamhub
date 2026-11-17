@@ -1,0 +1,79 @@
+name: APK Fire TV
+
+# Gera o APK do StreamHub para Fire TV / Android TV.
+# - Em todo push que mexe no app: o APK fica em "Artifacts" na página da execução.
+# - Quando uma release é publicada (ex.: pelo "Publicar nova versao.bat"): o APK é anexado nela.
+on:
+  push:
+    branches: [main, firestick-apk]
+    paths: ['src/**', 'public/**', 'android/**', 'index.html', 'package.json', 'package-lock.json', 'vite.config.ts', '.github/workflows/android-tv.yml']
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Front-end (vite build)
+        run: |
+          npm ci --no-audit --no-fund
+          npx vite build
+          rm -rf android/app/src/main/assets/web
+          mkdir -p android/app/src/main/assets
+          cp -r dist android/app/src/main/assets/web
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - name: Chave de assinatura (se configurada)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.STREAMHUB_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/streamhub-tv.jks"
+            echo "STREAMHUB_KEYSTORE_PATH=$RUNNER_TEMP/streamhub-tv.jks" >> "$GITHUB_ENV"
+            echo "Usando a chave oficial."
+          else
+            echo "Sem secrets: usando a chave de teste do repositório."
+          fi
+
+      - name: APK
+        working-directory: android
+        env:
+          STREAMHUB_KEYSTORE_PASSWORD: ${{ secrets.STREAMHUB_KEYSTORE_PASSWORD }}
+          STREAMHUB_KEY_ALIAS: ${{ secrets.STREAMHUB_KEY_ALIAS }}
+          STREAMHUB_KEY_PASSWORD: ${{ secrets.STREAMHUB_KEYSTORE_PASSWORD }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StreamHub-FireTV
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: Anexar à release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Nome fixo também, para o link curto no app Downloader do Fire TV:
+          # https://github.com/leozinwf/streamhub/releases/latest/download/StreamHub-FireTV.apk
+          cp android/app/build/outputs/apk/release/StreamHub-FireTV-*.apk "$RUNNER_TEMP/StreamHub-FireTV.apk"
+          gh release upload "${{ github.event.release.tag_name }}" android/app/build/outputs/apk/release/*.apk "$RUNNER_TEMP/StreamHub-FireTV.apk" --clobber
