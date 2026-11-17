@@ -40,6 +40,9 @@ public class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         startServer();
 
+        // Permite inspecionar o app pelo chrome://inspect (só com a depuração ADB ligada no aparelho).
+        WebView.setWebContentsDebuggingEnabled(true);
+
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(8, 10, 15));
         webView = new WebView(this);

@@ -80,6 +80,8 @@ function score(from: DOMRect, to: DOMRect, direction: Direction) {
 }
 
 function focusElement(element: HTMLElement) {
+  // Passar por um campo de texto não abre o teclado da TV; ele só abre com OK (ver onKeyDown).
+  if (isTextField(element)) element.setAttribute('inputmode', 'none')
   element.focus({ preventScroll: true })
   // Centraliza na vertical (o cabeçalho fixo não cobre o item) e o mínimo na horizontal.
   element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
@@ -132,6 +134,15 @@ function onKeyDown(event: KeyboardEvent) {
     event.preventDefault()
     event.stopImmediatePropagation()
     move(direction)
+    return
+  }
+  if (event.key === 'Enter' && isTextField(active) && active.getAttribute('inputmode') === 'none') {
+    // OK num campo de texto: abre o teclado da TV para digitar.
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    active.removeAttribute('inputmode')
+    active.blur()
+    active.focus({ preventScroll: true })
     return
   }
   if (event.key === 'Enter' && active instanceof HTMLElement && active !== document.body) {
