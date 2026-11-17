@@ -77,3 +77,47 @@ jobs:
           # https://github.com/leozinwf/streamhub/releases/latest/download/StreamHub-FireTV.apk
           cp android/app/build/outputs/apk/release/StreamHub-FireTV-*.apk "$RUNNER_TEMP/StreamHub-FireTV.apk"
           gh release upload "${{ github.event.release.tag_name }}" android/app/build/outputs/apk/release/*.apk "$RUNNER_TEMP/StreamHub-FireTV.apk" --clobber
+
+  # Teste rápido num emulador Android (só no branch de desenvolvimento do app de TV):
+  # instala o APK, abre o app e confere o servidor local e o proxy de streams.
+  smoke-test:
+    if: github.ref == 'refs/heads/firestick-apk'
+    needs: apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: StreamHub-FireTV
+          path: apk
+
+      - name: Habilitar KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Emulador
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis
+          arch: x86_64
+          profile: tv_1080p
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            adb install -r apk/*.apk
+            adb shell am start -n com.streamhub.tv/.MainActivity
+            sleep 20
+            adb forward tcp:51730 tcp:51730
+            echo "== health"; curl -sS -m 10 http://127.0.0.1:51730/api/health; echo
+            echo "== index"; curl -sS -m 10 http://127.0.0.1:51730/ | head -c 300; echo
+            echo "== playlist"; curl -sS -m 30 -o /tmp/pl.txt -w "%{http_code} %{size_download}\n" "http://127.0.0.1:51730/api/playlist?url=https%3A%2F%2Fiptv-org.github.io%2Fiptv%2Fcountries%2Fbr.m3u"; head -3 /tmp/pl.txt
+            echo "== stream manifest"; curl -sS -m 30 "http://127.0.0.1:51730/api/stream?url=https%3A%2F%2Ftest-streams.mux.dev%2Fx36xhzz%2Fx36xhzz.m3u8" | head -8
+            echo "== stream segment"; SEG=$(curl -sS -m 30 "http://127.0.0.1:51730/api/stream?url=https%3A%2F%2Ftest-streams.mux.dev%2Fx36xhzz%2Furl_0%2F193039199_mp4_h264_aac_hd_7.m3u8" | grep -v '^#' | head -1); echo "$SEG"; curl -sS -m 30 -o /dev/null -w "%{http_code} %{content_type} %{size_download}\n" "$SEG"
+            echo "== xtream (sem credenciais)"; curl -sS -m 10 -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:51730/api/xtream; echo
+            echo "== D-pad"; adb shell input keyevent KEYCODE_DPAD_DOWN; sleep 1; adb shell input keyevent KEYCODE_DPAD_DOWN; sleep 2
+            adb exec-out screencap -p > /tmp/shot.png
+            echo "== logcat"; adb logcat -d | grep -iE "StreamHub|chromium|AndroidRuntime|FATAL" | tail -40
+            python3 -c "from PIL import Image; im=Image.open('/tmp/shot.png').convert('RGB'); im.thumbnail((800,450)); im.save('/tmp/shot.jpg', quality=60)" 2>/dev/null || convert /tmp/shot.png -resize 800x450 -quality 60 /tmp/shot.jpg
+            echo "== SCREENSHOT_BASE64_BEGIN"; base64 -w0 /tmp/shot.jpg; echo; echo "== SCREENSHOT_BASE64_END"
