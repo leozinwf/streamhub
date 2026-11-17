@@ -8,11 +8,15 @@ const ARROWS: Record<string, Direction> = { ArrowLeft: 'left', ArrowRight: 'righ
 const FOCUSABLE = 'button, a[href], input:not([type="hidden"]), select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])'
 // Itens secundários dos cartões (título repete a miniatura; favoritar fica na tela do canal): pulados no controle.
 const SKIP = '.yt-title, .yt-avatar, .yt-fav'
+// Barras fixas no topo (cabeçalho, filtros): no ↑ ↓ só ganham quando não há conteúdo mais perto.
+const BARS = 'header, .yt-chips, .subcategory-strip, .category-strip, .content-tabs'
 const MODAL = '[aria-modal="true"], .settings-overlay'
 
 export const isTv = typeof navigator !== 'undefined' && /StreamHubTV/i.test(navigator.userAgent)
 
-let lastRect: DOMRect | null = null
+let lastFocused: HTMLElement | null = null
+// Primeiro foco quando nada está selecionado: o conteúdo (cartões), não o menu.
+const PREFERRED = '.yt-thumb, .channel-card, .media-card, .episode-list button, .shp-btn'
 
 function isTextField(element: Element | null): element is HTMLInputElement | HTMLTextAreaElement {
   if (!element) return false
@@ -85,32 +89,33 @@ function focusElement(element: HTMLElement) {
   element.focus({ preventScroll: true })
   // Centraliza na vertical (o cabeçalho fixo não cobre o item) e o mínimo na horizontal.
   element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
-  lastRect = element.getBoundingClientRect()
+  lastFocused = element
 }
 
 function firstVisible() {
   const list = candidates().filter(({ rect }) => rect.bottom > 0 && rect.top < window.innerHeight && rect.left >= 0 && rect.left < window.innerWidth)
   list.sort((a, b) => (a.rect.top - b.rect.top) || (a.rect.left - b.rect.left))
-  return list.find(({ element }) => isUsable(element))?.element ?? null
+  const usable = list.filter(({ element }) => isUsable(element))
+  return (usable.find(({ element }) => element.matches(PREFERRED)) ?? usable[0])?.element ?? null
 }
 
 function move(direction: Direction) {
   const active = document.activeElement as HTMLElement | null
   const hasFocus = active && active !== document.body && document.contains(active) && (scope() === document || (scope() as Element).contains(active))
-  const from = hasFocus ? active!.getBoundingClientRect() : lastRect
-  if (!from || (!hasFocus && from.width === 0)) {
-    const first = firstVisible()
-    if (first) focusElement(first)
+  if (!hasFocus) {
+    // Nada selecionado: volta ao último item (se ainda existe) ou vai para o primeiro cartão visível.
+    const target = lastFocused && lastFocused.isConnected && isUsable(lastFocused) ? lastFocused : firstVisible()
+    if (target) focusElement(target)
     return
   }
+  const from = active!.getBoundingClientRect()
   const ranked = candidates()
     .filter(({ element }) => element !== active)
-    .map((item) => ({ ...item, score: score(from, item.rect, direction) }))
+    .map((item) => ({ ...item, score: score(from, item.rect, direction) + ((direction === 'up' || direction === 'down') && !active!.closest(BARS) && item.element.closest(BARS) ? 600 : 0) }))
     .filter((item) => item.score !== Infinity)
     .sort((a, b) => a.score - b.score)
   const next = ranked.find(({ element }) => isUsable(element))
   if (next) focusElement(next.element)
-  else if (!hasFocus) { const first = firstVisible(); if (first) focusElement(first) }
 }
 
 function activeVideo() {
@@ -203,7 +208,7 @@ export function setupTv() {
   window.addEventListener('keydown', onKeyDown, true)
   document.addEventListener('focusin', (event) => {
     const target = event.target as HTMLElement | null
-    if (target && target !== document.body) lastRect = target.getBoundingClientRect()
+    if (target && target !== document.body) lastFocused = target
   })
   const w = window as unknown as Record<string, unknown>
   w.__streamhubBack = back

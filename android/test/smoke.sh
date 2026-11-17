@@ -41,7 +41,7 @@ cdp estado
 key KEYCODE_ENTER; sleep 8
 cdp estado
 shot home
-key KEYCODE_DPAD_DOWN; key KEYCODE_DPAD_DOWN
+key KEYCODE_DPAD_DOWN; key KEYCODE_DPAD_RIGHT
 cdp estado
 shot foco-cartao
 key KEYCODE_DPAD_CENTER; sleep 15
