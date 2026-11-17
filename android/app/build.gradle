@@ -1,5 +1,9 @@
 import groovy.json.JsonSlurper
 
+plugins {
+    id 'com.android.application'
+}
+
 // A versão do APK acompanha a do package.json (ex.: 0.2.5 -> versionName "0.2.5", versionCode 205).
 def packageJson = new JsonSlurper().parse(file('../../package.json'))
 def appVersion = packageJson.version as String
