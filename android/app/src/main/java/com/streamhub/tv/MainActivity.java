@@ -145,6 +145,13 @@ public class MainActivity extends Activity {
                 return true;
             }
         }
+        // O botão central do controle vira Enter: assim o site recebe a tecla em qualquer elemento
+        // (no WebView, o DPAD_CENTER não chega ao JavaScript quando o foco está num campo de texto).
+        if (code == KeyEvent.KEYCODE_DPAD_CENTER) {
+            return super.dispatchKeyEvent(new KeyEvent(event.getDownTime(), event.getEventTime(), event.getAction(),
+                    KeyEvent.KEYCODE_ENTER, event.getRepeatCount(), event.getMetaState(), event.getDeviceId(),
+                    event.getScanCode(), event.getFlags(), event.getSource()));
+        }
         if (code == KeyEvent.KEYCODE_BACK) {
             if (event.getAction() == KeyEvent.ACTION_UP) handleBack();
             return true;
