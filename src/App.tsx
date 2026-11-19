@@ -9,6 +9,7 @@ import ModernPlayer from './components/Player'
 import HomeFeed, { ChannelCard, MediaCard } from './components/HomeFeed'
 import Mosaic, { MOSAIC_LAYOUTS, MOSAIC_LIMIT, layoutCapacity, layoutLabel, type MosaicLayout } from './components/Mosaic'
 import { usePreference } from './lib/preferences'
+import { useMiniPlayerDrag } from './lib/useMiniPlayerDrag'
 import { groupLabel } from './lib/groupLabel'
 import { recommendChannels } from './lib/recommend'
 import { collapseChannelVariants, compareChannelNames, normalizeChannelKey } from './lib/channelVariants'
@@ -306,6 +307,8 @@ export default function App() {
   const [mediaLimit, setMediaLimit] = useState(120)
   const [channelView, setChannelView] = usePreference('streamhub-channel-view', 'grid', ['grid', 'list'] as const)
   const [miniPlayer, setMiniPlayer] = useState(false)
+  // Fechado pelo X: some até o player voltar a aparecer na página.
+  const [miniDismissed, setMiniDismissed] = useState(false)
   const [favoriteGroups, setFavoriteGroups] = useState<string[]>(() => readStoredList(FAVORITE_GROUPS_STORAGE_KEY))
   const [categoryQuery, setCategoryQuery] = useState('')
   const [mosaicMode, setMosaicMode] = usePreference('streamhub-mosaic-mode', '0', ['0', '1'] as const)
@@ -315,6 +318,14 @@ export default function App() {
   const [mosaicLayout, setMosaicLayout] = usePreference<MosaicLayout>('streamhub-mosaic-layout', 'auto', MOSAIC_LAYOUTS)
   const mosaicCapacity = layoutCapacity(mosaicLayout)
   const playerSlotRef = useRef<HTMLDivElement>(null)
+  const playerScreenRef = useRef<HTMLDivElement>(null)
+  const showMini = miniPlayer && !miniDismissed
+  const expandPlayer = () => window.scrollTo({ top: 0, behavior: 'smooth' })
+  const { corner: miniCorner, dragging: miniDragging } = useMiniPlayerDrag(playerScreenRef, showMini, expandPlayer)
+  function closeMiniPlayer() {
+    playerScreenRef.current?.querySelectorAll('video').forEach((video) => video.pause())
+    setMiniDismissed(true)
+  }
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -322,6 +333,7 @@ export default function App() {
     if (!slot || (!selectedChannel && !mosaicActive) || theaterMode) { setMiniPlayer(false); return }
     const observer = new IntersectionObserver(([entry]) => {
       setMiniPlayer(!entry.isIntersecting && entry.boundingClientRect.top < 0)
+      if (entry.isIntersecting) setMiniDismissed(false)
     }, { rootMargin: '-64px 0px 0px 0px' })
     observer.observe(slot)
     return () => observer.disconnect()
@@ -678,7 +690,7 @@ export default function App() {
       <form className="yt-search" role="search" onSubmit={(event) => { event.preventDefault(); (document.activeElement as HTMLElement | null)?.blur() }}><div className="yt-search-box"><Search size={17} className="yt-search-icon" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={contentMode === 'movie' ? 'Pesquisar filmes' : contentMode === 'series' ? 'Pesquisar séries' : 'Pesquisar canais'} aria-label="Pesquisar" />{query && <button className="yt-search-clear" type="button" aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={18} /></button>}</div><button type="submit" className="yt-search-btn" aria-label="Pesquisar" title="Pesquisar"><Search size={20} /></button></form>
       <div className="yt-topbar-end">{contentMode === 'live' && <button className={mosaicActive ? 'yt-icon-btn yt-hide-sm active' : 'yt-icon-btn yt-hide-sm'} onClick={toggleMosaic} title={mosaicActive ? 'Sair do mosaico' : 'Mosaico: assistir até 4 canais'} aria-pressed={mosaicActive}><LayoutDashboard size={18} /></button>}<button className={theaterMode ? 'yt-icon-btn yt-hide-sm active' : 'yt-icon-btn yt-hide-sm'} onClick={toggleTheater} title={theaterMode ? 'Sair do modo teatro' : 'Modo teatro'} aria-pressed={theaterMode}><Theater size={19} /></button><button className="yt-icon-btn yt-hide-sm" onClick={exportM3u} title="Exportar canais em M3U"><Download size={19} /></button><button className="yt-icon-btn yt-hide-sm" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={19} /></button><button className="yt-icon-btn" onClick={() => setSettingsOpen(true)} title="Configurações e acesso"><Settings size={19} /></button><button className="yt-icon-btn" onClick={logout} title="Sair e remover a lista deste aparelho"><LogOut size={19} /></button></div>
       <input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
-    <div className="layout"><main className="content"><section className="watch-area"><div className="player-card"><div ref={playerSlotRef} className="player-slot"><div className={`player-screen ${miniPlayer ? 'mini-player' : ''}`}>{mosaicActive ? <Mosaic channels={mosaicChannels} onRemove={removeFromMosaic} notice={mosaicNotice} layout={mosaicLayout} onLayoutChange={changeMosaicLayout} /> : <ModernPlayer channel={selectedChannel} theaterMode={theaterMode} onToggleTheater={toggleTheater} />}{miniPlayer && <button className="mini-return" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} title="Voltar ao player">Expandir</button>}</div></div>{selectedChannel && !mosaicActive && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{groupLabel(selectedChannel.group)} · transmissão ao vivo</p></div><button className={favorite ? 'yt-subscribe active' : 'yt-subscribe'} onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'} aria-pressed={favorite}><Star size={17} fill={favorite ? 'currentColor' : 'none'} />{favorite ? 'Favoritado' : 'Favoritar'}</button>{contentMode === 'live' && channelPanelHidden && <button className="yt-subscribe active yt-show-panel" onClick={() => setChannelPanelHidden(false)} title="Mostrar lista de canais"><PanelRightOpen size={17} />Mostrar canais</button>}</div>}</div></section>
+    <div className="layout"><main className="content"><section className="watch-area"><div className="player-card"><div ref={playerSlotRef} className="player-slot"><div ref={playerScreenRef} className={`player-screen ${showMini ? `mini-player mini-${miniCorner}${miniDragging ? ' mini-dragging' : ''}` : ''}`}>{mosaicActive ? <Mosaic channels={mosaicChannels} onRemove={removeFromMosaic} notice={mosaicNotice} layout={mosaicLayout} onLayoutChange={changeMosaicLayout} /> : <ModernPlayer channel={selectedChannel} theaterMode={theaterMode} onToggleTheater={toggleTheater} />}{showMini && <><span className="mini-grip" aria-hidden="true" /><button className="mini-return" onClick={expandPlayer} title="Voltar ao player">Expandir</button><button className="mini-close" onClick={closeMiniPlayer} title="Fechar miniplayer" aria-label="Fechar miniplayer"><X size={16} /></button></>}</div></div>{selectedChannel && !mosaicActive && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{groupLabel(selectedChannel.group)} · transmissão ao vivo</p></div><button className={favorite ? 'yt-subscribe active' : 'yt-subscribe'} onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'} aria-pressed={favorite}><Star size={17} fill={favorite ? 'currentColor' : 'none'} />{favorite ? 'Favoritado' : 'Favoritar'}</button>{contentMode === 'live' && channelPanelHidden && <button className="yt-subscribe active yt-show-panel" onClick={() => setChannelPanelHidden(false)} title="Mostrar lista de canais"><PanelRightOpen size={17} />Mostrar canais</button>}</div>}</div></section>
       {contentMode === 'live' && selectedChannel && !mosaicActive && epgStatus !== 'idle' && (() => {
         const nowSeconds = clock / 1000
         const current = epgPrograms.find((program) => program.start <= nowSeconds && program.end > nowSeconds)
