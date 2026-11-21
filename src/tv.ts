@@ -118,6 +118,12 @@ function move(direction: Direction) {
   if (next) focusElement(next.element)
 }
 
+/** Pede ao app Android para abrir o teclado da TV (o WebView não abre sozinho ao focar pelo JavaScript). */
+function openKeyboard() {
+  const native = (window as unknown as { StreamHubNative?: { showKeyboard?: () => void } }).StreamHubNative
+  setTimeout(() => { try { native?.showKeyboard?.() } catch { /* app antigo sem a ponte */ } }, 60)
+}
+
 function activeVideo() {
   const videos = Array.from(document.querySelectorAll('video'))
   return videos.find((video) => !video.paused) ?? videos[0] ?? null
@@ -148,6 +154,7 @@ function onKeyDown(event: KeyboardEvent) {
     active.removeAttribute('inputmode')
     active.blur()
     active.focus({ preventScroll: true })
+    openKeyboard()
     return
   }
   if (event.key === 'Enter' && active instanceof HTMLElement && active !== document.body) {

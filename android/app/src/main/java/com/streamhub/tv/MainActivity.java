@@ -12,6 +12,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -63,6 +65,8 @@ public class MainActivity extends Activity {
         settings.setTextZoom(100);
         // O front-end liga o modo TV (navegação pelo controle) quando vê esta marca.
         settings.setUserAgentString(settings.getUserAgentString() + " StreamHubTV/" + BuildConfigHolder.versionName(this));
+
+        webView.addJavascriptInterface(new NativeBridge(), "StreamHubNative");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -219,6 +223,23 @@ public class MainActivity extends Activity {
             webView.destroy();
         }
         super.onDestroy();
+    }
+
+    /** Chamado pelo site (src/tv.ts). No WebView, focar um campo pelo JavaScript não abre o teclado da TV. */
+    final class NativeBridge {
+        @JavascriptInterface
+        public void showKeyboard() {
+            runOnUiThread(() -> {
+                webView.requestFocus();
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm == null) return;
+                if (!imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)) {
+                    // Alguns aparelhos (Fire OS antigos) só abrem forçando.
+                    //noinspection deprecation
+                    imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
+                }
+            });
+        }
     }
 
     /** versionName sem depender do BuildConfig (desligado por padrão no AGP 8). */
