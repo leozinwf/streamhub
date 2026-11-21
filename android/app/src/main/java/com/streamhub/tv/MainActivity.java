@@ -230,14 +230,8 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void showKeyboard() {
             runOnUiThread(() -> {
-                webView.requestFocus();
                 InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-                if (imm == null) return;
-                if (!imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)) {
-                    // Alguns aparelhos (Fire OS antigos) só abrem forçando.
-                    //noinspection deprecation
-                    imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
-                }
+                if (imm != null) imm.showSoftInput(webView, 0);
             });
         }
     }

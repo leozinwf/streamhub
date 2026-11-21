@@ -34,7 +34,8 @@ echo "== importar M3U pelo controle"
 key KEYCODE_DPAD_DOWN; key KEYCODE_DPAD_DOWN; key KEYCODE_DPAD_DOWN
 cdp estado
 shot foco-no-campo-sem-teclado
-key KEYCODE_DPAD_CENTER
+key KEYCODE_DPAD_CENTER; sleep 1
+cdp estado
 echo "== teclado aberto? $(adb shell dumpsys input_method | grep -oE 'mInputShown=(true|false)' | head -1)"
 shot teclado-aberto
 adb shell input text "https://raw.githubusercontent.com/leozinwf/streamhub/firestick-apk/android/test/teste.m3u"; sleep 1

@@ -121,7 +121,7 @@ function move(direction: Direction) {
 /** Pede ao app Android para abrir o teclado da TV (o WebView não abre sozinho ao focar pelo JavaScript). */
 function openKeyboard() {
   const native = (window as unknown as { StreamHubNative?: { showKeyboard?: () => void } }).StreamHubNative
-  setTimeout(() => { try { native?.showKeyboard?.() } catch { /* app antigo sem a ponte */ } }, 60)
+  try { native?.showKeyboard?.() } catch { /* app antigo sem a ponte */ }
 }
 
 function activeVideo() {
@@ -151,10 +151,11 @@ function onKeyDown(event: KeyboardEvent) {
     // OK num campo de texto: abre o teclado da TV para digitar.
     event.preventDefault()
     event.stopImmediatePropagation()
-    active.removeAttribute('inputmode')
-    active.blur()
-    active.focus({ preventScroll: true })
-    openKeyboard()
+    const field = active
+    field.removeAttribute('inputmode')
+    field.blur()
+    // Foca de novo no próximo ciclo (com o inputmode já atualizado) e pede o teclado ao app.
+    setTimeout(() => { field.focus({ preventScroll: true }); openKeyboard() }, 30)
     return
   }
   if (event.key === 'Enter' && active instanceof HTMLElement && active !== document.body) {
