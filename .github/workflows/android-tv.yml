@@ -1,0 +1,130 @@
+name: APK Android e Fire TV
+
+# Gera o APK do StreamHub para Android (celular/tablet) e Fire TV / Android TV — o mesmo APK serve para os dois.
+# - Em todo push que mexe no app: o APK fica em "Artifacts" na página da execução.
+# - Quando uma release é publicada (ex.: pelo "Publicar nova versao.bat"): o APK é anexado nela.
+on:
+  push:
+    branches: [main, firestick-apk]
+    paths: ['src/**', 'public/**', 'android/**', 'index.html', 'package.json', 'package-lock.json', 'vite.config.ts', '.github/workflows/android-tv.yml']
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Front-end (vite build)
+        run: |
+          npm ci --no-audit --no-fund
+          npx vite build
+          rm -rf android/app/src/main/assets/web
+          mkdir -p android/app/src/main/assets
+          cp -r dist android/app/src/main/assets/web
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - name: Chave de assinatura (se configurada)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.STREAMHUB_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/streamhub-tv.jks"
+            echo "STREAMHUB_KEYSTORE_PATH=$RUNNER_TEMP/streamhub-tv.jks" >> "$GITHUB_ENV"
+            echo "Usando a chave oficial."
+          else
+            echo "Sem secrets: usando a chave de teste do repositório."
+          fi
+
+      - name: APK
+        working-directory: android
+        env:
+          STREAMHUB_KEYSTORE_PASSWORD: ${{ secrets.STREAMHUB_KEYSTORE_PASSWORD }}
+          STREAMHUB_KEY_ALIAS: ${{ secrets.STREAMHUB_KEY_ALIAS }}
+          STREAMHUB_KEY_PASSWORD: ${{ secrets.STREAMHUB_KEYSTORE_PASSWORD }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StreamHub-FireTV
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: Versão de teste (pré-release "tv")
+        if: github.ref == 'refs/heads/firestick-apk' && github.event_name != 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Link curto para baixar no Fire TV pelo app Downloader:
+          # github.com/leozinwf/streamhub/releases/download/tv/tv.apk
+          cp android/app/build/outputs/apk/release/StreamHub-FireTV-*.apk "$RUNNER_TEMP/tv.apk"
+          if ! gh release view tv >/dev/null 2>&1; then
+            gh release create tv --prerelease --target "$GITHUB_SHA" --title "Fire TV (teste)" \
+              --notes "APK de teste do StreamHub para Fire TV / Android TV. No app Downloader do Fire TV, digite: github.com/leozinwf/streamhub/releases/download/tv/tv.apk"
+          fi
+          gh release upload tv "$RUNNER_TEMP/tv.apk" --clobber
+
+      - name: Anexar à release
+        if: github.event_name == 'release' && github.event.release.tag_name != 'firestick-teste' && github.event.release.tag_name != 'tv'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Nome fixo também, para o link curto no app Downloader do Fire TV:
+          # https://github.com/leozinwf/streamhub/releases/latest/download/StreamHub-FireTV.apk
+          # e para celular: .../releases/latest/download/StreamHub-Android.apk (mesmo APK).
+          cp android/app/build/outputs/apk/release/StreamHub-FireTV-*.apk "$RUNNER_TEMP/StreamHub-FireTV.apk"
+          cp android/app/build/outputs/apk/release/StreamHub-FireTV-*.apk "$RUNNER_TEMP/StreamHub-Android.apk"
+          gh release upload "${{ github.event.release.tag_name }}" "$RUNNER_TEMP/StreamHub-FireTV.apk" "$RUNNER_TEMP/StreamHub-Android.apk" --clobber
+
+  # Teste rápido num emulador Android (só no branch de desenvolvimento do app de TV):
+  # instala o APK, abre o app e confere o servidor local e o proxy de streams.
+  smoke-test:
+    if: github.ref == 'refs/heads/firestick-apk'
+    needs: apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: StreamHub-FireTV
+          path: apk
+
+      - name: Habilitar KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Emulador
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis
+          arch: x86_64
+          profile: tv_1080p
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash android/test/smoke.sh

@@ -6,6 +6,12 @@
 
 Os dois guardam a sua lista e as suas preferências no mesmo lugar, então dá para trocar de um para o outro.
 
+### Android e Fire TV
+- **StreamHub-Android.apk**: celular ou tablet Android. Abra o arquivo baixado e permita a instalação de "fontes desconhecidas" quando o Android pedir.
+- **StreamHub-FireTV.apk**: Fire TV Stick e Android TV. No app **Downloader**, digite `github.com/leozinwf/streamhub/releases/latest/download/StreamHub-FireTV.apk`.
+
+É o mesmo app nos dois: na TV ele usa a navegação pelo controle remoto; no celular, o toque. Os arquivos aparecem nesta página alguns minutos depois da publicação.
+
 ### O Windows bloqueou ou "não aconteceu nada" ao abrir?
 O StreamHub ainda não tem assinatura digital, então o Windows pode barrar o arquivo baixado. Para liberar:
 1. Clique com o botão direito no arquivo baixado → **Propriedades**.

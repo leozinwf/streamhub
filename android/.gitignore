@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+*.jks
+*.keystore
+!debug.keystore
+# Copiado do "npm run build" na hora de gerar o APK
+app/src/main/assets/web/
