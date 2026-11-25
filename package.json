@@ -1,7 +1,7 @@
 {
   "name": "streamhub",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Player de IPTV/M3U no estilo YouTube",
   "author": "Leonardo Morais",
   "license": "GPL-3.0-or-later",

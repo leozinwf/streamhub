@@ -9,3 +9,4 @@ electron/app/
 .gh-token
 _to_delete/
 *.patch
+Claude outputs/

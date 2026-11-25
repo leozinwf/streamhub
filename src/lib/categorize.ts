@@ -54,7 +54,7 @@ export function categorizeChannel(channel: Channel): Channel {
   const text = `${name} ${group}`
   let category = 'Outros'
 
-  if (matches(text, /\b(adult|xxx|porno|porn|sexo|sex|erotic|18\+|18 anos|privat|sensual)\b/)) category = '+18'
+  if (!/\badult ?swim\b/.test(text) && (matches(text, /\b(adult|xxx|porno|porn|sexo|sex|erotic|18 anos|privat|sensual)\b/) || matches(text, /(^|\s)(\+ ?18|18 ?\+)(\s|$)/))) category = '+18'
   // Foreign channels go to their own category first, so they never mix with Brazilian ones.
   else if (isForeignChannel(channel)) category = 'Internacionais'
   // Streaming/event channels (Disney+, Max, Prime…) often carry football and big events.

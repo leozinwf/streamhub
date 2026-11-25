@@ -1,3 +1,8 @@
+import { CHANNEL_DRAG_TYPE } from './Mosaic'
+import { EpgNowLine } from './EpgGuide'
+import { toggleMyList, useWatchState } from '../lib/watchState'
+import { Bookmark, BookmarkCheck } from 'lucide-react'
+import { dedupeTitles, isAdult, mediaSubtitle, sortMedia } from '../lib/mediaCatalog'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Baby, BookOpen, Trash2, ChevronLeft, ChevronRight, Church, Clapperboard, Clock3, Download, Film, Globe, History, Home, LogOut, Menu, Music, Newspaper, Popcorn, Radio, Search, Settings, Sparkles, Star, Timer, Trophy, Tv, Upload, X } from 'lucide-react'
 import type { Channel, MediaItem } from '../types'
@@ -81,7 +86,8 @@ export function ChannelCard({ channel, group, favorite, onPlay, onToggleFavorite
   const hue = hueFor(channel.name)
   // Only real quality labels, without repeats (versions without a label show as "Qualidade").
   const qualities = Array.from(new Set(channel.variants?.map((variant) => variant.quality).filter((quality) => quality && quality !== 'Qualidade') ?? []))
-  return <article className={active ? 'yt-card is-active' : 'yt-card'}>
+  // Draggable so it can be dropped on a mosaic screen.
+  return <article className={active ? 'yt-card is-active' : 'yt-card'} draggable onDragStart={(event) => { event.dataTransfer.setData(CHANNEL_DRAG_TYPE, JSON.stringify(channel)); event.dataTransfer.effectAllowed = 'copyMove' }}>
     <button className="yt-thumb" onClick={onPlay} style={{ ['--hue' as string]: hue }} aria-label={`Assistir ${channel.name}`} aria-current={active || undefined}>
       {channel.logo && <img className="yt-thumb-backdrop" src={channel.logo} alt="" loading="lazy" aria-hidden="true" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = 'none' }} />}
       <Artwork src={channel.logo} name={channel.name} className="yt-thumb-logo" />
@@ -94,6 +100,7 @@ export function ChannelCard({ channel, group, favorite, onPlay, onToggleFavorite
         <button className="yt-title" onClick={onPlay} title={channel.name}>{channel.name}</button>
         <span className="yt-sub">{group ? groupLabel(group) : 'Sem categoria'}</span>
         {qualities.length > 1 && <span className="yt-sub yt-qualities">{qualities.join(' · ')}</span>}
+        <EpgNowLine channel={channel} />
       </div>
       <button className={favorite ? 'yt-fav active' : 'yt-fav'} onClick={onToggleFavorite} aria-pressed={favorite} aria-label={favorite ? `Remover ${channel.name} dos favoritos` : `Favoritar ${channel.name}`} title={favorite ? 'Remover dos favoritos' : 'Favoritar'}><Star size={17} fill={favorite ? 'currentColor' : 'none'} /></button>
       {extra}
@@ -101,19 +108,26 @@ export function ChannelCard({ channel, group, favorite, onPlay, onToggleFavorite
   </article>
 }
 
-export function MediaCard({ item, onOpen }: { item: MediaItem; onOpen: () => void }) {
+export function MediaCard({ item, onOpen, subtitle, progress }: { item: MediaItem; onOpen: () => void; subtitle?: string; progress?: number }) {
   const hue = hueFor(item.name)
-  return <article className="yt-card">
-    <button className="yt-thumb" onClick={onOpen} style={{ ['--hue' as string]: hue }} aria-label={`${item.kind === 'movie' ? 'Assistir' : 'Abrir'} ${item.name}`}>
+  const watch = useWatchState()
+  const inList = watch.myList.some((entry) => entry.id === item.id)
+  const saved = item.kind === 'movie' ? watch.progress[item.id] : undefined
+  const ratio = progress ?? (saved ? saved.position / saved.duration : undefined)
+  const label = `${item.kind === 'movie' ? 'Ver filme' : 'Ver série'} ${item.name}`
+  return <article className="yt-card is-media">
+    <button className="yt-thumb" onClick={onOpen} style={{ ['--hue' as string]: hue }} aria-label={label}>
       {item.poster && <img className="yt-thumb-backdrop" src={item.poster} alt="" loading="lazy" aria-hidden="true" referrerPolicy="no-referrer" onError={(event) => { event.currentTarget.style.display = 'none' }} />}
       <Artwork src={item.poster} name={item.name} className="yt-thumb-poster" />
       <span className="yt-badge">{item.kind === 'movie' ? 'FILME' : 'SÉRIE'}</span>
+      {ratio !== undefined && <span className="yt-card-progress"><span style={{ width: `${Math.min(100, ratio * 100)}%` }} /></span>}
     </button>
+    <button className={inList ? 'yt-card-list active' : 'yt-card-list'} onClick={() => toggleMyList(item)} aria-pressed={inList} title={inList ? 'Remover da minha lista' : 'Adicionar à minha lista'} aria-label={inList ? `Remover ${item.name} da minha lista` : `Adicionar ${item.name} à minha lista`}>{inList ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}</button>
     <div className="yt-meta">
       <span className="yt-avatar" style={{ ['--hue' as string]: hue }}>{item.kind === 'movie' ? <Film size={16} /> : <Clapperboard size={16} />}</span>
       <div className="yt-text">
         <button className="yt-title" onClick={onOpen} title={item.name}>{item.name}</button>
-        <span className="yt-sub">{item.category}</span>
+        <span className="yt-sub">{subtitle || mediaSubtitle(item)}</span>
       </div>
     </div>
   </article>
@@ -133,8 +147,10 @@ export default function HomeFeed(props: Props) {
   const sentinelRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
-  const movies = useMemo(() => media.filter((item) => item.kind === 'movie'), [media])
-  const series = useMemo(() => media.filter((item) => item.kind === 'series'), [media])
+  // Adult titles stay inside their own genre in the movie/series library.
+  const safeMedia = useMemo(() => media.filter((item) => !isAdult(item)), [media])
+  const movies = useMemo(() => sortMedia(dedupeTitles(safeMedia.filter((item) => item.kind === 'movie')), 'recent'), [safeMedia])
+  const series = useMemo(() => sortMedia(dedupeTitles(safeMedia.filter((item) => item.kind === 'series')), 'recent'), [safeMedia])
   const key = searchKey(query)
 
   const liveResults = useMemo(() => {
@@ -150,9 +166,9 @@ export default function HomeFeed(props: Props) {
   }, [channels, favorites, recents, feed, key, groupOf])
 
   const mediaResults = useMemo(() => {
-    const source = feed === 'movies' ? movies : feed === 'series' ? series : feed === 'all' && key ? media : []
+    const source = feed === 'movies' ? movies : feed === 'series' ? series : feed === 'all' && key ? safeMedia : []
     return key ? source.filter((item) => searchKey(item.name).includes(key)) : source
-  }, [feed, key, movies, series, media])
+  }, [feed, key, movies, series, safeMedia])
 
   // Home shelves ("Tudo" without a search): one row per main category, like YouTube.
   const shelves = useMemo(() => {

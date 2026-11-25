@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
-import { Headphones, Maximize2, Plus, RefreshCw, Volume2, VolumeX, X } from 'lucide-react'
+import { GripVertical, Headphones, Maximize2, Plus, RefreshCw, Volume2, VolumeX, X } from 'lucide-react'
 import type { Channel } from '../types'
 
 export const MOSAIC_LIMIT = 4
@@ -18,6 +18,38 @@ const LAYOUT_INFO: Record<MosaicLayout, { label: string; capacity: number; icon:
   pip: { label: 'Picture-in-picture', capacity: 2, icon: [[1, 1, 22, 16], [14, 10, 8, 6]] },
 }
 
+/** Drag payloads: a mosaic screen being moved, or a channel card dragged from the list. */
+export const TILE_DRAG_TYPE = 'application/x-streamhub-tile'
+export const CHANNEL_DRAG_TYPE = 'application/x-streamhub-channel'
+
+type DropProps = {
+  index: number
+  onMove: (from: number, to: number) => void
+  onDropChannel: (channel: Channel, index: number) => void
+}
+
+/** Lets a screen (tile or empty slot) receive dragged screens and channels. */
+function useDropTarget({ index, onMove, onDropChannel }: DropProps) {
+  const [over, setOver] = useState(false)
+  const accepts = (event: React.DragEvent) => event.dataTransfer.types.includes(TILE_DRAG_TYPE) || event.dataTransfer.types.includes(CHANNEL_DRAG_TYPE)
+  return {
+    over,
+    handlers: {
+      onDragOver: (event: React.DragEvent) => { if (!accepts(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setOver(true) },
+      onDragLeave: () => setOver(false),
+      onDrop: (event: React.DragEvent) => {
+        setOver(false)
+        const tile = event.dataTransfer.getData(TILE_DRAG_TYPE)
+        const channel = event.dataTransfer.getData(CHANNEL_DRAG_TYPE)
+        if (!tile && !channel) return
+        event.preventDefault()
+        if (tile) onMove(Number(tile), index)
+        else { try { onDropChannel(JSON.parse(channel) as Channel, index) } catch { /* ignore bad payloads */ } }
+      },
+    },
+  }
+}
+
 export function layoutCapacity(layout: MosaicLayout) { return LAYOUT_INFO[layout].capacity }
 export function layoutLabel(layout: MosaicLayout) { return LAYOUT_INFO[layout].label }
 
@@ -28,13 +60,17 @@ const isTs = (url: string) => /\.(?:ts|m2ts)(?:$|\?)/i.test(url)
 const isDirect = (url: string) => /\.(?:mp4|m4v|webm|mkv|avi|mov)(?:$|\?)/i.test(url)
 const tsFallback = (url: string) => (/\/live\//i.test(url) && /\.m3u8(?:$|\?)/i.test(url) ? url.replace(/\.m3u8(?=$|\?)/i, '.ts') : null)
 
-function MosaicTile({ channel, audio, onAudio, onSolo, onRemove }: {
+function MosaicTile({ channel, audio, onAudio, onSolo, onRemove, index, targeted, onTarget, onMove, onDropChannel }: {
   channel: Channel
   audio: Audio
   onAudio: (next: Audio) => void
   onSolo: () => void
   onRemove: () => void
-}) {
+  targeted: boolean
+  onTarget: () => void
+} & DropProps) {
+  const drop = useDropTarget({ index, onMove, onDropChannel })
+  const [dragging, setDragging] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -120,15 +156,17 @@ function MosaicTile({ channel, audio, onAudio, onSolo, onRemove }: {
   }
   const audible = !audio.muted && audio.volume > 0
 
-  return <div ref={rootRef} className={audible ? 'mosaic-tile audible' : 'mosaic-tile'} onDoubleClick={toggleFullscreen}>
+  const classes = ['mosaic-tile', audible && 'audible', targeted && 'targeted', drop.over && 'drop-over', dragging && 'dragging'].filter(Boolean).join(' ')
+  return <div ref={rootRef} className={classes} onDoubleClick={toggleFullscreen} onClick={(event) => { if (!(event.target as HTMLElement).closest('button, input, .mosaic-name')) onTarget() }} {...drop.handlers}>
     <video ref={videoRef} playsInline muted={!audible} />
     {loading && !error && <div className="mosaic-status"><span className="mosaic-spinner" />Carregando…</div>}
+    {targeted && <div className="mosaic-target-badge">Próximo canal entra aqui</div>}
     {error && <div className="mosaic-status error"><span>{error}</span><button onClick={() => setRetry((value) => value + 1)}><RefreshCw size={13} /> Tentar de novo</button></div>}
     <div className="mosaic-top">
-      <span className="mosaic-name" title={channel.name}>{audible && <Volume2 size={12} />}{channel.name}</span>
+      <span className="mosaic-name" title={`${channel.name} — arraste para mudar de lugar`} draggable onDragStart={(event) => { event.dataTransfer.setData(TILE_DRAG_TYPE, String(index)); event.dataTransfer.effectAllowed = 'move'; setDragging(true) }} onDragEnd={() => setDragging(false)}><GripVertical size={13} className="mosaic-grip" />{audible && <Volume2 size={12} />}{channel.name}</span>
       <div>
         <button onClick={toggleFullscreen} title="Tela cheia" aria-label={`Tela cheia: ${channel.name}`}><Maximize2 size={14} /></button>
-        <button onClick={onRemove} title="Remover do mosaico" aria-label={`Remover ${channel.name} do mosaico`}><X size={15} /></button>
+        <button className="mosaic-close" onClick={(event) => { event.stopPropagation(); onRemove() }} title="Fechar esta tela" aria-label={`Remover ${channel.name} do mosaico`}><X size={16} /></button>
       </div>
     </div>
     <div className="mosaic-controls" onDoubleClick={(event) => event.stopPropagation()}>
@@ -147,12 +185,24 @@ function LayoutIcon({ layout }: { layout: MosaicLayout }) {
   </svg>
 }
 
-export default function Mosaic({ channels, onRemove, notice, layout, onLayoutChange }: {
+function EmptySlot({ index, targeted, onTarget, onMove, onDropChannel, label }: DropProps & { targeted: boolean; onTarget: () => void; label: string }) {
+  const drop = useDropTarget({ index, onMove, onDropChannel })
+  return <button type="button" className={['mosaic-slot', targeted && 'targeted', drop.over && 'drop-over'].filter(Boolean).join(' ')} onClick={onTarget} {...drop.handlers}>
+    <Plus size={20} /><span>{label}</span>
+  </button>
+}
+
+export default function Mosaic({ channels, onRemove, notice, layout, onLayoutChange, target, onTarget, onMove, onDropChannel }: {
   channels: Channel[]
   onRemove: (channel: Channel) => void
   notice?: string | null
   layout: MosaicLayout
   onLayoutChange: (layout: MosaicLayout) => void
+  /** Screen chosen to receive the next channel clicked in the list. */
+  target: number | null
+  onTarget: (index: number | null) => void
+  onMove: (from: number, to: number) => void
+  onDropChannel: (channel: Channel, index: number) => void
 }) {
   const [audio, setAudio] = useState<Record<string, Audio>>({})
   const capacity = layoutCapacity(layout)
@@ -165,6 +215,7 @@ export default function Mosaic({ channels, onRemove, notice, layout, onLayoutCha
     const current = audioFor(channel, index)
     return [channel.id, channel.id === target.id ? { volume: current.volume || 0.8, muted: false } : { ...current, muted: true }]
   })))
+  const toggleTarget = (index: number) => onTarget(target === index ? null : index)
 
   // Automático: 1 canal divide com um espaço vazio; 2 lado a lado; 3 e 4 em grade.
   // Layouts fixos: sempre mostram todos os espaços do layout.
@@ -172,13 +223,27 @@ export default function Mosaic({ channels, onRemove, notice, layout, onLayoutCha
     ? (visible.length === 1 || visible.length === 3 ? 1 : 0)
     : Math.max(0, capacity - visible.length)
   const layoutClass = layout === 'auto' ? `mosaic-auto mosaic-${Math.max(visible.length, 1)}` : `mosaic-layout-${layout}`
-  return <div className={`mosaic ${layoutClass}${visible.length === 0 ? ' is-empty' : ''}`}>
-    {visible.map((channel, index) => <MosaicTile key={channel.id} channel={channel} audio={audioFor(channel, index)} onAudio={(next) => setAudioFor(channel, next)} onSolo={() => solo(channel)} onRemove={() => onRemove(channel)} />)}
-    {visible.length > 0 && Array.from({ length: slots }).map((_, index) => <div key={`slot-${index}`} className="mosaic-slot"><Plus size={20} /><span>Clique em um canal da lista para adicionar</span></div>)}
-    {visible.length === 0 && <div className="mosaic-slot mosaic-empty"><Plus size={24} /><strong>Mosaico vazio</strong><span>Escolha o layout acima e clique em até {capacity} canais da lista</span></div>}
-    <div className="mosaic-layouts" role="radiogroup" aria-label="Layout do mosaico">
-      {MOSAIC_LAYOUTS.map((option) => <button key={option} role="radio" aria-checked={layout === option} className={layout === option ? 'active' : ''} title={`${LAYOUT_INFO[option].label} · até ${LAYOUT_INFO[option].capacity} canais`} aria-label={`${LAYOUT_INFO[option].label}, até ${LAYOUT_INFO[option].capacity} canais`} onClick={() => onLayoutChange(option)}><LayoutIcon layout={option} /></button>)}
+  const hint = target !== null
+    ? 'Agora clique no canal que vai para a tela marcada'
+    : visible.length >= capacity
+      ? 'Clique numa tela para trocar o canal · arraste o nome para mudar de lugar'
+      : 'Clique num canal da lista ou arraste-o até uma tela'
+  return <div className="mosaic-wrap">
+    <div className="mosaic-bar">
+      <div className="mosaic-layouts" role="radiogroup" aria-label="Layout do mosaico">
+        {MOSAIC_LAYOUTS.map((option) => <button key={option} role="radio" aria-checked={layout === option} className={layout === option ? 'active' : ''} title={`${LAYOUT_INFO[option].label} · até ${LAYOUT_INFO[option].capacity} canais`} aria-label={`${LAYOUT_INFO[option].label}, até ${LAYOUT_INFO[option].capacity} canais`} onClick={() => onLayoutChange(option)}><LayoutIcon layout={option} /></button>)}
+      </div>
+      <span className="mosaic-bar-hint">{hint}</span>
+      {target !== null && <button className="mosaic-bar-cancel" onClick={() => onTarget(null)}>Cancelar</button>}
     </div>
-    {notice && <div className="mosaic-notice" role="status">{notice}</div>}
+    <div className={`mosaic ${layoutClass}${visible.length === 0 ? ' is-empty' : ''}`}>
+      {visible.map((channel, index) => <MosaicTile key={channel.id} channel={channel} index={index} targeted={target === index} onTarget={() => toggleTarget(index)} onMove={onMove} onDropChannel={onDropChannel} audio={audioFor(channel, index)} onAudio={(next) => setAudioFor(channel, next)} onSolo={() => solo(channel)} onRemove={() => onRemove(channel)} />)}
+      {visible.length > 0 && Array.from({ length: slots }).map((_, offset) => {
+        const index = visible.length + offset
+        return <EmptySlot key={`slot-${index}`} index={index} targeted={target === index} onTarget={() => toggleTarget(index)} onMove={onMove} onDropChannel={onDropChannel} label="Clique num canal da lista ou arraste-o para cá" />
+      })}
+      {visible.length === 0 && <EmptySlot index={0} targeted={false} onTarget={() => onTarget(null)} onMove={onMove} onDropChannel={onDropChannel} label={`Mosaico vazio: escolha o layout acima e clique (ou arraste) até ${capacity} canais da lista`} />}
+      {notice && <div className="mosaic-notice" role="status">{notice}</div>}
+    </div>
   </div>
 }

@@ -1,3 +1,4 @@
+import { clearProgress, getProgress, markWatched, saveProgress } from '../lib/watchState'
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Check, ChevronLeft, ChevronRight, Gauge, Maximize, Minimize, Pause, PictureInPicture2, Play, RectangleHorizontal, RefreshCw, RotateCcw, RotateCw, Scan, Settings, SlidersHorizontal, Volume1, Volume2, VolumeX } from 'lucide-react'
 import Hls from 'hls.js'
@@ -53,6 +54,25 @@ const SCREEN_FIT_LABELS: Record<(typeof SCREEN_FITS)[number], string> = { contai
 const SCREEN_FIT_HINTS: Record<(typeof SCREEN_FITS)[number], string> = { contain: 'Sem cortes (original)', cover: 'Corta as bordas', fill: 'Ocupa toda a tela' }
 /** How far back (seconds) a live channel can be rewound. The browser may keep less. */
 const DVR_BUFFER_SECONDS = 30 * 60
+/**
+ * Memory budget for already-played HLS media. Browsers cap a SourceBuffer at
+ * roughly 150 MB; holding 30 minutes of HD video overflows it, appends start
+ * failing and playback freezes until the buffer is flushed (e.g. by switching
+ * quality). The rewind window is derived from the bitrate to stay under it.
+ */
+const BACK_BUFFER_BUDGET_BYTES = 90 * 1024 * 1024
+const MIN_BACK_BUFFER_SECONDS = 60
+/** MPEG-TS has no bitrate info up front, so keep a conservative fixed window. */
+const TS_BACK_BUFFER_SECONDS = 4 * 60
+/** Playback that makes no progress for this long counts as frozen. */
+const STALL_TIMEOUT_MS = 4000
+
+function backBufferFor(bitrate: number) {
+  if (!bitrate || !Number.isFinite(bitrate)) return 3 * 60
+  const seconds = (BACK_BUFFER_BUDGET_BYTES * 8) / bitrate
+  return Math.round(Math.min(DVR_BUFFER_SECONDS, Math.max(MIN_BACK_BUFFER_SECONDS, seconds)))
+}
+
 /** Within this many seconds of the live edge the player counts as "ao vivo". */
 const LIVE_EDGE_TOLERANCE = 8
 
@@ -88,9 +108,11 @@ type Props = {
   channel: Channel | null
   theaterMode?: boolean
   onToggleTheater?: () => void
+  /** Movies/episodes: called when playback reaches the end (next episode). */
+  onEnded?: () => void
 }
 
-export default function Player({ channel, theaterMode = false, onToggleTheater }: Props) {
+export default function Player({ channel, theaterMode = false, onToggleTheater, onEnded }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const hlsRef = useRef<Hls | null>(null)
@@ -102,6 +124,8 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
   /** True while the viewer is watching the live edge; false after pausing or rewinding. */
   const followLiveRef = useRef(true)
   const isLiveRef = useRef(false)
+  /** False only after the viewer pauses; while true a paused video is restarted. */
+  const wantPlayRef = useRef(true)
   const tapRevealRef = useRef(false)
   const theaterToggleRef = useRef(onToggleTheater)
   theaterToggleRef.current = onToggleTheater
@@ -109,6 +133,11 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
   const [retryKey, setRetryKey] = useState(0)
   const [usingFallback, setUsingFallback] = useState(false)
   const [variantId, setVariantId] = useState<string | null>(null)
+  /** Short message over the video (quality switched, resumed from…). */
+  const [notice, setNotice] = useState<{ text: string; action?: { label: string; run: () => void } } | null>(null)
+  const triedVariantsRef = useRef(new Set<string>())
+  const onEndedRef = useRef(onEnded)
+  onEndedRef.current = onEnded
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [volume, setVolume] = useState(readVolume)
@@ -123,6 +152,8 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
   const [controlsVisible, setControlsVisible] = useState(false)
   const [hlsLevels, setHlsLevels] = useState<Array<{ index: number; height: number; bitrate: number }>>([])
   const [hlsQuality, setHlsQuality] = useState(-1)
+  /** Quality chosen by the viewer (-1 = auto), readable from player callbacks. */
+  const hlsQualityRef = useRef(-1)
   const [activeHeight, setActiveHeight] = useState(0)
   const [scrubTime, setScrubTime] = useState<number | null>(null)
   const [hoverPoint, setHoverPoint] = useState<{ x: number; time: number } | null>(null)
@@ -172,6 +203,8 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
   useEffect(() => () => { if (controlsHideTimerRef.current) clearTimeout(controlsHideTimerRef.current) }, [])
 
   useEffect(() => {
+    triedVariantsRef.current = new Set()
+    setNotice(null)
     setVariantId(null)
     setUsingFallback(false)
     setSettingsOpen(false)
@@ -216,6 +249,8 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
       const target = event.target as HTMLElement | null
       if (target?.isContentEditable || target?.tagName === 'BUTTON' || target?.tagName === 'INPUT' || target?.tagName === 'SELECT' || target?.tagName === 'TEXTAREA') return
       if (event.ctrlKey || event.metaKey || event.altKey) return
+      // Shift+↑/↓ is channel up/down (handled by the app), not volume.
+      if (event.shiftKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) return
       const video = videoRef.current
       if (!video) return
       const key = event.key.toLowerCase()
@@ -273,6 +308,7 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
     setError(null)
     setHlsLevels([])
     setHlsQuality(-1)
+    hlsQualityRef.current = -1
 
     const startTs = (url: string) => {
       if (disposed || !mpegts.getFeatureList().mseLivePlayback) return false
@@ -286,8 +322,8 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
           // rewinding are not undone by mpegts jumping back to the edge.
           liveBufferLatencyChasing: false,
           autoCleanupSourceBuffer: true,
-          autoCleanupMaxBackwardDuration: DVR_BUFFER_SECONDS,
-          autoCleanupMinBackwardDuration: DVR_BUFFER_SECONDS - 60,
+          autoCleanupMaxBackwardDuration: TS_BACK_BUFFER_SECONDS,
+          autoCleanupMinBackwardDuration: TS_BACK_BUFFER_SECONDS - 60,
         } as any)
         tsRef.current = player
         player.attachMediaElement(video)
@@ -321,7 +357,8 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
         // an older segment when loading resumes.
         // Keep already-played media so the user can pause and rewind live
         // channels (timeshift). The browser may evict older data earlier.
-        backBufferLength: DVR_BUFFER_SECONDS,
+        // Adjusted per quality in LEVEL_SWITCHED (see backBufferFor).
+        backBufferLength: 3 * 60,
         maxBufferLength: 30,
         maxMaxBufferLength: 60,
         liveSyncDurationCount: 2,
@@ -331,13 +368,13 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
         // When the stream gets behind, catch up gently rather than seeking
         // through the buffered timeline, which is perceived as a replay.
         maxLiveSyncPlaybackRate: 1.15,
-        manifestLoadingMaxRetry: 2,
+        manifestLoadingMaxRetry: 3,
         manifestLoadingRetryDelay: 1000,
-        levelLoadingMaxRetry: 2,
+        levelLoadingMaxRetry: 4,
         levelLoadingRetryDelay: 1000,
-        fragLoadingMaxRetry: 2,
+        fragLoadingMaxRetry: 4,
         fragLoadingRetryDelay: 1000,
-        appendErrorMaxRetry: 2,
+        appendErrorMaxRetry: 3,
       })
       hlsRef.current = hls
       hls.attachMedia(video)
@@ -345,7 +382,15 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
         if (!disposed) hls.loadSource(proxyStreamUrl(usingFallback ? xtreamTsFallback(activeUrl) || activeUrl : activeUrl))
       })
       hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-        if (!disposed) setActiveHeight(hls.levels[data.level]?.height || 0)
+        if (disposed) return
+        const level = hls.levels[data.level]
+        setActiveHeight(level?.height || 0)
+        hls.config.backBufferLength = backBufferFor(level?.bitrate || 0)
+      })
+      // Media is flowing again: give future failures a fresh set of retries.
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        networkRecoveryAttempts = 0
+        mediaRecoveryAttempts = 0
       })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (disposed) return
@@ -354,12 +399,24 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
         safePlay(video, true)
       })
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (disposed || !data.fatal) return
+        if (disposed) return
+        if (!data.fatal) {
+          // The SourceBuffer is full: drop the played media now instead of
+          // letting playback freeze until the next quality switch.
+          if (data.details === Hls.ErrorDetails.BUFFER_FULL_ERROR && video.currentTime > 30) {
+            hls.trigger(Hls.Events.BUFFER_FLUSHING, { startOffset: 0, endOffset: video.currentTime - 10, type: null })
+          }
+          return
+        }
         const details = data.details || 'erro desconhecido'
         const status = data.response?.code ? ` HTTP ${data.response.code}` : ''
         const message = `${details}${status}`
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          if (networkRecoveryAttempts < 1) { networkRecoveryAttempts += 1; hls.startLoad(); return }
+          if (networkRecoveryAttempts < 3) {
+            networkRecoveryAttempts += 1
+            setTimeout(() => { if (!disposed) hls.startLoad() }, 1000 * networkRecoveryAttempts)
+            return
+          }
           const fallback = xtreamTsFallback(activeUrl)
           if (fallback && !usingFallback) { setUsingFallback(true); setRetryKey((value) => value + 1); return }
           fail(`Falha de rede no HLS (${message}).`)
@@ -386,8 +443,68 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
       fail('Este navegador não oferece suporte ao formato deste stream.')
     }
 
+    // Mid-playback freeze recovery. The start-up watchdog above only covers the
+    // first seconds; after that a stalled stream used to stay frozen until the
+    // viewer switched quality. Escalate: resume loading -> reload the current
+    // quality (what a manual switch does) -> rebuild the media pipeline ->
+    // restart the player.
+    let lastTime = video.currentTime
+    let lastProgressAt = Date.now()
+    let stallStep = 0
+    const stallTimer = setInterval(() => {
+      if (disposed) return
+      const now = Date.now()
+      if (video.paused || video.ended || video.seeking || video.readyState === HTMLMediaElement.HAVE_NOTHING) {
+        lastTime = video.currentTime
+        lastProgressAt = now
+        return
+      }
+      if (video.currentTime !== lastTime) {
+        lastTime = video.currentTime
+        lastProgressAt = now
+        stallStep = 0
+        return
+      }
+      if (now - lastProgressAt < STALL_TIMEOUT_MS) return
+      lastProgressAt = now
+      stallStep += 1
+      recoverFromStall(stallStep)
+    }, 1000)
+
+    const recoverFromStall = (step: number) => {
+      const hls = hlsRef.current
+      const ts = tsRef.current
+      // A small gap in the buffer: hop over it.
+      for (let i = 0; i < video.buffered.length; i += 1) {
+        const start = video.buffered.start(i)
+        if (start > video.currentTime && start - video.currentTime < 2) { video.currentTime = start + 0.1; return }
+      }
+      if (hls) {
+        if (step === 1) {
+          const sync = hls.liveSyncPosition
+          if (followLiveRef.current && sync !== null && Number.isFinite(sync) && sync > video.currentTime + 1) video.currentTime = sync
+          hls.startLoad()
+        } else if (step === 2) {
+          // Same as picking a quality in the menu: flush and refetch.
+          hls.currentLevel = hlsQualityRef.current
+        } else if (step === 3) {
+          hls.recoverMediaError()
+        } else {
+          setRetryKey((value) => value + 1)
+        }
+        safePlay(video)
+        return
+      }
+      if (ts && step === 1 && video.buffered.length) {
+        const end = video.buffered.end(video.buffered.length - 1)
+        if (end - video.currentTime > 1) { video.currentTime = Math.max(video.currentTime, end - 2); return }
+      }
+      if (step >= 2) setRetryKey((value) => value + 1)
+    }
+
     return () => {
       disposed = true
+      clearInterval(stallTimer)
       if (watchdogTimer) clearTimeout(watchdogTimer)
       destroyPlayers()
       cleanupVideo()
@@ -409,6 +526,94 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
     return () => events.forEach((event) => video.removeEventListener(event, restoreRate))
   }, [playbackRate, activeUrl, retryKey, usingFallback])
 
+  // A quality that fails to open hands over to the next one of the same channel
+  // (FHD → HD → SD…) before showing an error.
+  useEffect(() => {
+    if (!error || variants.length < 2) return
+    const current = activeVariant ?? variants[0]
+    triedVariantsRef.current.add(current.id)
+    const next = variants.find((variant) => !triedVariantsRef.current.has(variant.id))
+    if (!next) return
+    setNotice({ text: `${current.quality || 'Esta qualidade'} não abriu. Trocando para ${next.quality || 'outra qualidade'}…` })
+    setError(null)
+    setUsingFallback(false)
+    setVariantId(next.id)
+    setRetryKey((value) => value + 1)
+  }, [error])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(null), notice.action ? 8000 : 4500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  // Movies and episodes: resume where the viewer stopped, keep saving the
+  // position, and report the end so the next episode can start.
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !channel || (channel.kind !== 'movie' && channel.kind !== 'series')) return
+    const entry = () => ({
+      id: channel.id, mediaId: channel.mediaId || channel.id, kind: channel.kind as 'movie' | 'series', name: channel.name,
+      label: channel.episodeLabel, poster: channel.logo, url: channel.url,
+      position: video.currentTime, duration: video.duration,
+    })
+    let resumed = false
+    let lastSave = 0
+    const onMetadata = () => {
+      if (resumed) return
+      resumed = true
+      const saved = getProgress(channel.id)
+      if (saved && saved.position > 30 && (!Number.isFinite(video.duration) || saved.position < video.duration - 60)) {
+        video.currentTime = saved.position
+        setNotice({ text: `Continuando de ${formatTime(saved.position)}`, action: { label: 'Recomeçar', run: () => { video.currentTime = 0; clearProgress(channel.id); setNotice(null) } } })
+      }
+    }
+    const onTime = () => {
+      if (!resumed || Date.now() - lastSave < 5000) return
+      lastSave = Date.now()
+      saveProgress(entry())
+    }
+    const onPause = () => { if (resumed && video.currentTime > 0) saveProgress(entry()) }
+    const onEnd = () => { markWatched(channel.id); onEndedRef.current?.() }
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) onMetadata()
+    video.addEventListener('loadedmetadata', onMetadata)
+    video.addEventListener('timeupdate', onTime)
+    video.addEventListener('pause', onPause)
+    video.addEventListener('ended', onEnd)
+    return () => {
+      if (resumed && video.currentTime > 0) saveProgress(entry())
+      video.removeEventListener('loadedmetadata', onMetadata)
+      video.removeEventListener('timeupdate', onTime)
+      video.removeEventListener('pause', onPause)
+      video.removeEventListener('ended', onEnd)
+    }
+  }, [channel?.id, activeUrl, retryKey])
+
+  // Autoplay guard. A play() call made while hls.js/mpegts are still attaching
+  // or seeking is often rejected with AbortError ("interrupted by a new load
+  // request"), which left channels sitting paused until the viewer pressed play.
+  // Keep trying whenever the video becomes playable, unless the viewer paused.
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !channel) return
+    wantPlayRef.current = true
+    const onPlay = () => { wantPlayRef.current = true }
+    // Only a pause while media is loaded is the viewer's; teardown pauses come with no data.
+    const onPause = () => { if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.ended) wantPlayRef.current = false }
+    const kick = () => { if (wantPlayRef.current && video.paused && !video.ended && video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) safePlay(video, true) }
+    const events = ['loadeddata', 'canplay', 'canplaythrough', 'seeked'] as const
+    video.addEventListener('play', onPlay)
+    video.addEventListener('pause', onPause)
+    events.forEach((event) => video.addEventListener(event, kick))
+    const timer = setInterval(kick, 1500)
+    return () => {
+      clearInterval(timer)
+      video.removeEventListener('play', onPlay)
+      video.removeEventListener('pause', onPause)
+      events.forEach((event) => video.removeEventListener(event, kick))
+    }
+  }, [channel, activeUrl, retryKey, usingFallback])
+
   // Follow the live edge only while the viewer has not paused or rewound.
   useEffect(() => {
     const video = videoRef.current
@@ -418,7 +623,12 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
       const hls = hlsRef.current
       if (hls) {
         const sync = hls.liveSyncPosition
-        if (sync !== null && Number.isFinite(sync) && sync - video.currentTime > 30) video.currentTime = sync
+        // Jump before falling out of the playlist window (IPTV lists often
+        // hold only a few segments); otherwise the next segment is gone.
+        const details = hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel]?.details
+        const windowSeconds = details?.totalduration || 30
+        const maxBehind = Math.max(10, Math.min(30, windowSeconds - (details?.targetduration || 6)))
+        if (sync !== null && Number.isFinite(sync) && sync - video.currentTime > maxBehind) video.currentTime = sync
         return
       }
       if (!video.buffered.length) return
@@ -495,7 +705,7 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
   const togglePiP = async () => { const video = videoRef.current as HTMLVideoElement & { requestPictureInPicture?: () => Promise<PictureInPictureWindow> }; if (!video?.requestPictureInPicture) return; try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture() } catch { /* unsupported/rejected */ } }
   const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
   const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }
-  const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; setHlsQuality(value); setSettingsOpen(false) }
+  const selectHlsQuality = (value: number) => { const hls = hlsRef.current; if (!hls) return; hls.currentLevel = value; hlsQualityRef.current = value; setHlsQuality(value); setSettingsOpen(false) }
   const selectPlaybackRate = (next: (typeof PLAYBACK_RATES)[number]) => {
     const video = videoRef.current
     requestedRateRef.current = next
@@ -567,6 +777,7 @@ export default function Player({ channel, theaterMode = false, onToggleTheater }
     <video ref={videoRef} controls={false} playsInline preload="auto" style={{ objectFit: screenFit }} onClick={handleVideoClick} />
     <div className="now-playing"><div><strong>{channel.name}</strong><span>{groupLabel(channel.group)}</span></div><small>{activeVariant?.quality || (usingFallback ? 'MPEG-TS' : isMpegTs(activeUrl) ? 'MPEG-TS' : 'HLS')}</small></div>
     {!isPlaying && !error && <button className="player-center-play" onClick={togglePlay} onDoubleClick={(event) => event.stopPropagation()} aria-label="Reproduzir"><Play size={30} fill="currentColor" /></button>}
+    {notice && <div className="player-notice" role="status"><span>{notice.text}</span>{notice.action && <button onClick={notice.action.run}>{notice.action.label}</button>}</div>}
     {error && <div className="video-error"><span>{error}</span><button onClick={retry}><RefreshCw size={14} /> Tentar novamente</button></div>}
     <div className="shp-controls" onDoubleClick={(event) => event.stopPropagation()}>
       {canSeek && <div ref={progressRef} className={`shp-progress ${scrubTime !== null ? 'dragging' : ''}`} role="slider" aria-label={isLive ? 'Linha do tempo do ao vivo' : 'Posição'} aria-valuemin={0} aria-valuemax={Math.round(span)} aria-valuenow={Math.round(displayTime - timeline.start)} aria-valuetext={labelFor(displayTime)} tabIndex={-1} onPointerDown={onProgressDown} onPointerMove={onProgressMove} onPointerUp={onProgressUp} onPointerCancel={() => setScrubTime(null)} onPointerLeave={() => setHoverPoint(null)}>
