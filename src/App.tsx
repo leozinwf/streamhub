@@ -19,6 +19,8 @@ import { scrollToSection } from './lib/scroll'
 import PlaylistSettings from './components/PlaylistSettings'
 import ImportScreen from './components/ImportScreen'
 import EpgGuide, { EpgConnectionContext } from './components/EpgGuide'
+import { TvChannelOverlay, TvInfoBanner } from './components/TvOverlay'
+import { isTv } from './tv'
 import MediaDetails from './components/MediaDetails'
 import { groupLabel } from './lib/groupLabel'
 import { recommendChannels } from './lib/recommend'
@@ -65,6 +67,20 @@ export default function App() {
   const channelLimit = Number.MAX_SAFE_INTEGER
   const [channelView, setChannelView] = usePreference('streamhub-channel-view', 'grid', ['grid', 'list'] as const)
   const [miniPlayer, setMiniPlayer] = useState(false)
+  /** Fire TV: video in full screen (true) or browsing the app (false). */
+  const [tvWatching, setTvWatching] = useState(false)
+  /** Fire TV: channel menu open over the video. */
+  const [tvOverlay, setTvOverlay] = useState(false)
+  const tvKeyRef = useRef<(event: KeyboardEvent) => boolean>(() => false)
+  const tvBackRef = useRef<() => boolean>(() => false)
+  /** Bumped to show the channel banner again (→ on the remote, seeking). */
+  const [tvBanner, setTvBanner] = useState(0)
+  useEffect(() => {
+    if (!isTv) return
+    const w = window as unknown as Record<string, unknown>
+    w.__streamhubWatchKey = (event: KeyboardEvent) => tvKeyRef.current(event)
+    w.__streamhubWatchBack = () => tvBackRef.current()
+  }, [])
   const [adultTab, setAdultTab] = useState<AdultTab>('live')
   const [adultSubgroup, setAdultSubgroup] = useState('Todos')
   const [channelSort, setChannelSort] = usePreference<ChannelSort>('streamhub-channel-sort', 'default', CHANNEL_SORTS)
@@ -96,7 +112,7 @@ export default function App() {
 
   useEffect(() => {
     const slot = playerSlotRef.current
-    if (!slot || (!selectedChannel && !mosaicActive) || theaterMode) { setMiniPlayer(false); return }
+    if (!slot || (!selectedChannel && !mosaicActive) || theaterMode || isTv) { setMiniPlayer(false); return }
     const observer = new IntersectionObserver(([entry]) => {
       setMiniPlayer(!entry.isIntersecting && entry.boundingClientRect.top < 0)
     }, { rootMargin: '-64px 0px 0px 0px' })
@@ -184,6 +200,7 @@ export default function App() {
             if (restored) {
               setSelectedChannel(restored)
               setContentMode('live')
+              if (isTv) setTvWatching(true)
             }
           }
         } catch { /* Ignore invalid or unavailable saved preferences. */ }
@@ -303,7 +320,7 @@ export default function App() {
     let target: Channel | undefined
     if (step === 'back') target = previousChannelRef.current || undefined
     else {
-      const list = contentMode === 'adult' ? adultChannelList : channels.length ? channels : collapseChannelVariants(regularPlaylistChannels)
+      const list = contentMode === 'adult' ? adultChannelList : tvChannelList
       if (!list.length) return
       const index = selectedChannel ? list.findIndex((channel) => channel.id === selectedChannel.id || channel.url === selectedChannel.url || channel.variants?.some((variant) => variant.id === selectedChannel.id)) : -1
       target = list[(index + step + list.length) % list.length]
@@ -311,7 +328,46 @@ export default function App() {
     if (!target) { if (step === 'back') setZapToast('Nenhum canal anterior'); return }
     setSelectedChannel(target)
     addRecent(target)
-    setZapToast(`${step === 'back' ? '↺' : step < 0 ? '▲' : '▼'} ${target.name}`)
+    if (!isTv) setZapToast(`${step === 'back' ? '↺' : step < 0 ? '▲' : '▼'} ${target.name}`)
+  }
+  const tvFullscreen = isTv && tvWatching && Boolean(selectedChannel) && !mosaicActive
+  useEffect(() => {
+    const root = document.documentElement.classList
+    root.toggle('tv-watching', tvFullscreen)
+    root.toggle('tv-menu-open', tvFullscreen && tvOverlay)
+    if (!tvFullscreen && tvOverlay) setTvOverlay(false)
+  }, [tvFullscreen, tvOverlay])
+  // Channel order for zapping and the Fire TV menu: the list on screen, but never the
+  // "Recomendados" list (which doesn't contain the channel being watched).
+  const tvChannelList = useMemo(() => !showingRecommendations && channels.length ? channels : collapseChannelVariants(regularPlaylistChannels).sort(compareChannelNames), [showingRecommendations, channels, regularPlaylistChannels])
+  // Fire TV full-screen keys (called by tv.ts while watching with the menu closed).
+  tvKeyRef.current = (event) => {
+    const video = document.querySelector<HTMLVideoElement>('.player-screen video')
+    const live = !selectedChannel?.kind || selectedChannel.kind === 'live'
+    const key = event.key
+    if (key === 'ArrowUp' || key === 'ArrowDown' || key === 'ChannelUp' || key === 'ChannelDown' || key === 'PageUp' || key === 'PageDown') {
+      if (!live) return false
+      zapRef.current(key === 'ArrowUp' || key === 'ChannelUp' || key === 'PageUp' ? -1 : 1)
+      return true
+    }
+    if (key === 'Enter' || key === ' ' || key === 'ContextMenu') {
+      if (live) setTvOverlay(true)
+      else if (video) { if (video.paused) void video.play().catch(() => undefined); else video.pause() }
+      return true
+    }
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      if (live) { if (key === 'ArrowLeft') setTvOverlay(true); else setTvBanner((value) => value + 1); return true }
+      if (video) video.currentTime = Math.max(0, video.currentTime + (key === 'ArrowLeft' ? -10 : 10))
+      setTvBanner((value) => value + 1)
+      return true
+    }
+    return false
+  }
+  tvBackRef.current = () => {
+    if (!tvWatching) return false
+    if (tvOverlay) { setTvOverlay(false); return true }
+    setTvWatching(false)
+    return true
   }
   const isActiveChannel = (channel: Channel) => mosaicActive
     ? mosaicChannels.some((item) => item.id === channel.id || item.url === channel.url)
@@ -411,6 +467,8 @@ export default function App() {
     setSidebarOpen(false)
     // Go up to the player. A side panel keeps its own scroll; when the list sits
     // below the player, remember where it was so "Voltar à lista" can return there.
+    // Fire TV: picking something to watch goes straight to full screen.
+    if (isTv) { setTvWatching(true); setTvOverlay(false); return }
     if (window.scrollY > 240) setListReturn(window.scrollY)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -528,7 +586,7 @@ export default function App() {
       <form className="yt-search" role="search" onSubmit={(event) => { event.preventDefault(); (document.activeElement as HTMLElement | null)?.blur() }}><div className="yt-search-box"><Search size={17} className="yt-search-icon" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={contentMode === 'movie' ? 'Pesquisar filmes' : contentMode === 'series' ? 'Pesquisar séries' : contentMode === 'adult' ? 'Pesquisar na área +18' : 'Pesquisar canais'} aria-label="Pesquisar" />{query && <button className="yt-search-clear" type="button" aria-label="Limpar pesquisa" onClick={() => setQuery('')}><X size={18} /></button>}</div><button type="submit" className="yt-search-btn" aria-label="Pesquisar" title="Pesquisar"><Search size={20} /></button></form>
       <div className="yt-topbar-end">{contentMode === 'live' && <button className={mosaicActive ? 'yt-icon-btn yt-hide-sm active' : 'yt-icon-btn yt-hide-sm'} onClick={toggleMosaic} title={mosaicActive ? 'Sair do mosaico' : 'Mosaico: assistir até 4 canais'} aria-pressed={mosaicActive}><LayoutDashboard size={18} /></button>}<button className={theaterMode ? 'yt-icon-btn yt-hide-sm active' : 'yt-icon-btn yt-hide-sm'} onClick={toggleTheater} title={theaterMode ? 'Sair do modo teatro' : 'Modo teatro'} aria-pressed={theaterMode}><Theater size={19} /></button><button className="yt-icon-btn yt-hide-sm" onClick={exportM3u} title="Exportar canais em M3U"><Download size={19} /></button><button className="yt-icon-btn yt-hide-sm" onClick={() => fileRef.current?.click()} title="Importar outra playlist"><Upload size={19} /></button><button className="yt-icon-btn" onClick={() => setSettingsOpen(true)} title="Configurações e acesso"><Settings size={19} /></button><button className="yt-icon-btn" onClick={logout} title="Sair e remover a lista deste aparelho"><LogOut size={19} /></button></div>
       <input ref={fileRef} type="file" accept=".m3u,.m3u8,text/plain" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void importFile(file); e.target.value = '' }} /></header>
-    <div className="layout"><main className="content"><section className={!selectedChannel && !mosaicActive ? 'watch-area is-empty' : 'watch-area'}><div className="player-card"><div ref={playerSlotRef} className="player-slot"><div className={`player-screen ${floatingPlayer ? `mini-player mini-${miniCorner}${miniDrag ? ' mini-dragging' : ''}` : ''}`} style={floatingPlayer && miniDrag ? { left: miniDrag.x, top: miniDrag.y, right: 'auto', bottom: 'auto' } : undefined}>{floatingPlayer && <div className="mini-bar" onPointerDown={startMiniDrag} title="Arraste para mudar de canto"><GripHorizontal size={16} /><span>Arraste para mover</span><button onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} title="Voltar ao player"><Maximize2 size={14} /> Expandir</button><button onClick={closeMiniPlayer} title="Fechar (pausa o canal)" aria-label="Fechar mini player"><X size={16} /></button></div>}{mosaicActive ? <Mosaic channels={mosaicChannels} onRemove={removeFromMosaic} notice={mosaicNotice} layout={mosaicLayout} onLayoutChange={(next) => { setMosaicTarget(null); changeMosaicLayout(next) }} target={mosaicTarget} onTarget={setMosaicTarget} onMove={moveInMosaic} onDropChannel={(channel, index) => { placeInMosaic(channel, index); setMosaicTarget(null) }} /> : <ModernPlayer channel={selectedChannel} theaterMode={theaterMode} onToggleTheater={toggleTheater} onEnded={playNextEpisode} />}</div></div>{selectedChannel && !mosaicActive && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.kind === 'movie' ? `Filme · ${selectedChannel.subgroup || ''}` : selectedChannel.kind === 'series' ? selectedChannel.subgroup : `${groupLabel(selectedChannel.group)} · transmissão ao vivo`}</p></div>{(!selectedChannel.kind || selectedChannel.kind === 'live') && <button className={favorite ? 'yt-subscribe active' : 'yt-subscribe'} onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'} aria-pressed={favorite}><Star size={17} fill={favorite ? 'currentColor' : 'none'} />{favorite ? 'Favoritado' : 'Favoritar'}</button>}{contentMode === 'live' && channelPanelHidden && <button className="yt-subscribe active yt-show-panel" onClick={() => setChannelPanelHidden(false)} title="Mostrar lista de canais"><PanelRightOpen size={17} />Mostrar canais</button>}</div>}</div></section>
+    <div className="layout"><main className="content"><section className={!selectedChannel && !mosaicActive ? 'watch-area is-empty' : 'watch-area'}><div className="player-card"><div ref={playerSlotRef} className="player-slot"><div className={`player-screen ${floatingPlayer ? `mini-player mini-${miniCorner}${miniDrag ? ' mini-dragging' : ''}` : ''}`} style={floatingPlayer && miniDrag ? { left: miniDrag.x, top: miniDrag.y, right: 'auto', bottom: 'auto' } : undefined}>{floatingPlayer && <div className="mini-bar" onPointerDown={startMiniDrag} title="Arraste para mudar de canto"><GripHorizontal size={16} /><span>Arraste para mover</span><button onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} title="Voltar ao player"><Maximize2 size={14} /> Expandir</button><button onClick={closeMiniPlayer} title="Fechar (pausa o canal)" aria-label="Fechar mini player"><X size={16} /></button></div>}{mosaicActive ? <Mosaic channels={mosaicChannels} onRemove={removeFromMosaic} notice={mosaicNotice} layout={mosaicLayout} onLayoutChange={(next) => { setMosaicTarget(null); changeMosaicLayout(next) }} target={mosaicTarget} onTarget={setMosaicTarget} onMove={moveInMosaic} onDropChannel={(channel, index) => { placeInMosaic(channel, index); setMosaicTarget(null) }} /> : <ModernPlayer channel={selectedChannel} theaterMode={theaterMode} onToggleTheater={toggleTheater} onEnded={playNextEpisode} onToggleFullscreen={isTv ? () => setTvWatching((value) => !value) : undefined} />}</div></div>{selectedChannel && !mosaicActive && <div className="video-meta"><div className="video-meta-logo">{selectedChannel.logo ? <img src={selectedChannel.logo} alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} /> : <Tv size={20} />}</div><div className="video-meta-info"><h1>{selectedChannel.name}</h1><p>{selectedChannel.kind === 'movie' ? `Filme · ${selectedChannel.subgroup || ''}` : selectedChannel.kind === 'series' ? selectedChannel.subgroup : `${groupLabel(selectedChannel.group)} · transmissão ao vivo`}</p></div>{(!selectedChannel.kind || selectedChannel.kind === 'live') && <button className={favorite ? 'yt-subscribe active' : 'yt-subscribe'} onClick={() => toggleFavorite(selectedChannel)} title={favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'} aria-pressed={favorite}><Star size={17} fill={favorite ? 'currentColor' : 'none'} />{favorite ? 'Favoritado' : 'Favoritar'}</button>}{contentMode === 'live' && channelPanelHidden && <button className="yt-subscribe active yt-show-panel" onClick={() => setChannelPanelHidden(false)} title="Mostrar lista de canais"><PanelRightOpen size={17} />Mostrar canais</button>}</div>}</div></section>
       {contentMode === 'live' && selectedChannel && !mosaicActive && <EpgGuide channel={selectedChannel} connection={xtreamConnection} />}
       {contentMode === 'adult' && !selectedSeries ? <section className="channels-section media-library adult-section">
         <div className="section-heading"><div><span className="eyebrow">CONTEÚDO ADULTO</span><h2>Área +18</h2></div><span className="count">{(adultChannelList.length + adultMedia.length).toLocaleString('pt-BR')} itens</span></div>
@@ -562,6 +620,13 @@ export default function App() {
         {selectedSeries ? <MediaDetails item={selectedSeries} connection={xtreamConnection} backLabel={contentMode === 'adult' ? 'Voltar à área +18' : contentMode === 'movie' ? 'Voltar aos filmes' : 'Voltar às séries'} onBack={() => setSelectedSeries(null)} onPlay={playFromDetails} /> : <MediaLibrary kind={contentMode === 'movie' ? 'movie' : 'series'} items={mediaItems} query={query} genre={selectedMediaCategory} onGenreChange={(genre) => { setSelectedMediaCategory(genre); scrollToSection('.media-library') }} onOpen={(item) => item.kind === 'movie' ? playMovie(item) : void openSeries(item)} />}
       </section>}
     {zapToast && <div className="zap-toast" role="status">{zapToast}</div>}
+    {tvFullscreen && selectedChannel && !tvOverlay && <TvInfoBanner key={`${selectedChannel.id}-${tvBanner}`} channel={selectedChannel} number={(!selectedChannel.kind || selectedChannel.kind === 'live') ? tvChannelList.findIndex((channel) => channel.id === selectedChannel.id || channel.url === selectedChannel.url) + 1 || undefined : undefined} hint={(!selectedChannel.kind || selectedChannel.kind === 'live') ? '↑ ↓ trocar canal · OK lista de canais · Voltar sair' : 'OK pausa · ← → 10 s · Voltar sair'} />}
+    {tvFullscreen && tvOverlay && <TvChannelOverlay channels={tvChannelList} selectedGroup={showingRecommendations ? 'Todos' : selectedGroup} current={selectedChannel} onGroup={(group) => { setSelectedGroup(group); setSelectedSubgroup('Todos') }} onPick={(channel) => { selectChannel(channel); setTvOverlay(false) }} groups={[
+      { id: 'Todos', label: 'Todos os canais' },
+      ...(favoriteChannels.length ? [{ id: 'Favoritos', label: 'Favoritos', count: favoriteChannels.length }] : []),
+      ...(recentChannels.length ? [{ id: 'Recentes', label: 'Vistos recentemente', count: recentChannels.length }] : []),
+      ...groups.map((group) => ({ id: group, label: groupLabel(group), count: groupCounts.get(group) || 0 })),
+    ]} />}
     {listReturn !== null && <button className="list-return" onClick={() => { const top = listReturn; setListReturn(null); window.scrollTo({ top, behavior: 'smooth' }) }}><ArrowDown size={16} /> Voltar à lista</button>}
     </main><aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
       <div className="yt-side-main">

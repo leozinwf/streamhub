@@ -1,3 +1,4 @@
+import { isAndroidApp } from '../tv'
 import { clearProgress, getProgress, markWatched, saveProgress } from '../lib/watchState'
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Check, ChevronLeft, ChevronRight, Gauge, Maximize, Minimize, Pause, PictureInPicture2, Play, RectangleHorizontal, RefreshCw, RotateCcw, RotateCw, Scan, Settings, SlidersHorizontal, Volume1, Volume2, VolumeX } from 'lucide-react'
@@ -60,7 +61,7 @@ const DVR_BUFFER_SECONDS = 30 * 60
  * failing and playback freezes until the buffer is flushed (e.g. by switching
  * quality). The rewind window is derived from the bitrate to stay under it.
  */
-const BACK_BUFFER_BUDGET_BYTES = 90 * 1024 * 1024
+const BACK_BUFFER_BUDGET_BYTES = (isAndroidApp ? 30 : 90) * 1024 * 1024
 const MIN_BACK_BUFFER_SECONDS = 60
 /** MPEG-TS has no bitrate info up front, so keep a conservative fixed window. */
 const TS_BACK_BUFFER_SECONDS = 4 * 60
@@ -110,9 +111,13 @@ type Props = {
   onToggleTheater?: () => void
   /** Movies/episodes: called when playback reaches the end (next episode). */
   onEnded?: () => void
+  /** Replaces the browser full screen (Fire TV: the app's own full-screen mode). */
+  onToggleFullscreen?: () => void
 }
 
-export default function Player({ channel, theaterMode = false, onToggleTheater, onEnded }: Props) {
+export default function Player({ channel, theaterMode = false, onToggleTheater, onEnded, onToggleFullscreen }: Props) {
+  const fullscreenOverrideRef = useRef(onToggleFullscreen)
+  fullscreenOverrideRef.current = onToggleFullscreen
   const videoRef = useRef<HTMLVideoElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const hlsRef = useRef<Hls | null>(null)
@@ -701,7 +706,7 @@ export default function Player({ channel, theaterMode = false, onToggleTheater, 
   }
   const toggleMute = () => { const video = videoRef.current; if (!video) return; if (video.volume === 0) { video.volume = 0.5; video.muted = false } else video.muted = !video.muted; rememberAudio(video) }
   const setPlayerVolume = (value: number) => { const video = videoRef.current; if (!video) return; video.volume = Math.max(0, Math.min(1, value)); if (value > 0) video.muted = false; rememberAudio(video) }
-  const toggleFullscreen = async () => { const root = rootRef.current; if (!root) return; try { if (document.fullscreenElement) await document.exitFullscreen(); else await root.requestFullscreen() } catch { /* unsupported/rejected */ } }
+  const toggleFullscreen = async () => { if (fullscreenOverrideRef.current) { fullscreenOverrideRef.current(); return }; const root = rootRef.current; if (!root) return; try { if (document.fullscreenElement) await document.exitFullscreen(); else await root.requestFullscreen() } catch { /* unsupported/rejected */ } }
   const togglePiP = async () => { const video = videoRef.current as HTMLVideoElement & { requestPictureInPicture?: () => Promise<PictureInPictureWindow> }; if (!video?.requestPictureInPicture) return; try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture() } catch { /* unsupported/rejected */ } }
   const retry = () => { setUsingFallback(false); setRetryKey((value) => value + 1) }
   const selectVariant = (variant: ChannelVariant) => { setVariantId(variant.id); setUsingFallback(false); setSettingsOpen(false); setRetryKey((value) => value + 1) }

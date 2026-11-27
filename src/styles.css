@@ -99,7 +99,7 @@
 .player-modern{min-width:0;min-height:0;overflow:hidden}
 .player-modern>video{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:0;max-width:100%;max-height:100%;object-position:center}
 .player-modern:fullscreen{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;aspect-ratio:auto;margin:0;padding:0;border:0;border-radius:0;background:#000}
-.player-modern:fullscreen .player-settings-menu{max-height:calc(100dvh - 120px)}
+.player-modern:fullscreen .player-settings-menu{max-height:calc(100vh - 120px);max-height:calc(100dvh - 120px)}
 
 /* Fit theater playback to the viewport, including on ultrawide displays. */
 .theater-mode{--theater-header:64px;--theater-gap:16px}
@@ -293,11 +293,11 @@ h1,h2,.brand,.gateway-brand strong,.home-selector button strong{font-family:var(
   .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)){
     display:grid;grid-template-columns:minmax(0,1fr) clamp(380px,26vw,520px);
     column-gap:24px;align-items:start;padding:20px 28px 40px}
-  .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) > .watch-area{grid-column:1;grid-row:1;width:100%;max-width:calc((100dvh - 210px) * 16 / 9);justify-self:center}
-  .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) > .epg-guide{grid-column:1;grid-row:2;width:100%;max-width:calc((100dvh - 210px) * 16 / 9);justify-self:center}
+  .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) > .watch-area{grid-column:1;grid-row:1;width:100%;max-width:calc((100vh - 210px) * 16 / 9);max-width:calc((100dvh - 210px) * 16 / 9);justify-self:center}
+  .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) > .epg-guide{grid-column:1;grid-row:2;width:100%;max-width:calc((100vh - 210px) * 16 / 9);max-width:calc((100dvh - 210px) * 16 / 9);justify-self:center}
   .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) > .channels-section{
     grid-column:2;grid-row:1 / span 2;width:100%;margin:0;position:sticky;top:84px;
-    max-height:calc(100dvh - 104px);padding:14px}
+    max-height:calc(100vh - 104px);max-height:calc(100dvh - 104px);padding:14px}
   .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) .channels-section .section-heading{top:-14px;margin:-14px -14px 12px;padding:14px;flex-wrap:wrap}
   .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) .section-heading h2{font-size:20px}
   .app-shell:not(.theater-mode) .content:has(.channels-section:not(.media-library)) .subcategory-strip{top:62px;margin:0 -14px 12px;padding:8px 14px}
@@ -944,7 +944,9 @@ h1,h2,.brand,.gateway-brand strong,.home-selector button strong{font-family:var(
 .yt-skin.theater-mode .content{padding:0 24px 40px;max-width:none}
 .yt-skin.theater-mode .watch-area{width:auto;max-width:none;margin:0 -24px}
 .yt-skin.theater-mode .player-slot{margin:0;width:100%;height:min(calc(100vh - var(--yt-top,56px) - 64px),56.25vw);height:min(calc(100dvh - var(--yt-top,56px) - 64px),56.25vw);aspect-ratio:auto;background:#000;display:flex;justify-content:center}
-.yt-skin.theater-mode .player-screen:not(.mini-player){width:min(100%,calc((100dvh - var(--yt-top,56px) - 64px) * 16 / 9));height:100%;margin:0 auto;border-radius:0}
+.yt-skin.theater-mode .player-screen:not(.mini-player){width:min(100%,calc((100vh - var(--yt-top,56px) - 64px) * 16 / 9));width:min(100%,calc((100dvh - var(--yt-top,56px) - 64px) * 16 / 9));height:100%;aspect-ratio:auto;margin:0 auto;border-radius:0}
+/* The video always fits inside the player box (letterboxed), never cropped. */
+.yt-skin.theater-mode .player-screen video{object-fit:contain}
 .yt-skin.theater-mode .watch-area>*:not(.player-card),.yt-skin.theater-mode .player-card>*:not(.player-slot){width:min(1600px,calc(100% - 48px));margin-left:auto;margin-right:auto}
 .yt-skin.theater-mode .content>*:not(.watch-area){width:min(1600px,100%);margin-left:auto;margin-right:auto}
 .yt-skin.theater-mode .channels-section .yt-channel-grid{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
@@ -1110,3 +1112,47 @@ h1,h2,.brand,.gateway-brand strong,.home-selector button strong{font-family:var(
 .tv .yt-thumb:focus .thumb-play,.tv .channel-card:focus .thumb-play{opacity:1;transform:scale(1)}
 .tv input:focus{outline-offset:0}
 .tv .yt-card-list,.tv .mini-bar>span,.tv .mini-bar>svg{display:none}
+
+/* ---------- Fire TV ---------- */
+/* Lighter rendering on the Fire Stick: no blurred backdrops, no animated transitions. */
+.tv .yt-thumb-backdrop{display:none}
+.tv *,.tv *::before,.tv *::after{transition:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+.tv .yt-thumb{background:#1b1b1b}
+
+/* Watching: the video takes the whole screen; the page behind is not painted. */
+.tv-watching body{overflow:hidden}
+.tv-watching body *{visibility:hidden}
+.tv-watching .player-screen,.tv-watching .player-screen *,.tv-watching .tv-overlay,.tv-watching .tv-overlay *,.tv-watching .tv-banner,.tv-watching .tv-banner *{visibility:visible}
+.tv-watching .player-screen{position:fixed!important;inset:0!important;z-index:200;width:100vw!important;height:100vh!important;max-width:none!important;aspect-ratio:auto!important;margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;background:#000}
+.tv-watching .player-screen video{object-fit:contain}
+.tv-watching .player-screen .now-playing{display:none}
+
+/* Channel menu over the video */
+.tv-overlay{position:fixed;inset:0;z-index:300;display:grid;grid-template-columns:300px 520px;align-content:stretch;background:linear-gradient(90deg,rgba(0,0,0,.92) 0,rgba(0,0,0,.85) 820px,rgba(0,0,0,.2) 100%)}
+.tv-overlay-groups,.tv-overlay-channels{display:flex;flex-direction:column;gap:4px;height:100vh;overflow-y:auto;padding:28px 14px 60px;scrollbar-width:none}
+.tv-overlay-groups{border-right:1px solid rgba(255,255,255,.08)}
+.tv-overlay-groups button{display:flex;align-items:center;gap:12px;min-height:46px;padding:8px 14px;border:0;border-radius:10px;background:transparent;color:#ccc;font-size:17px;text-align:left}
+.tv-overlay-groups button span{flex:1;min-width:0;line-height:1.2}
+.tv-overlay-groups button small{color:#888;font-size:13px}
+.tv-overlay-groups button.active{background:rgba(255,255,255,.12);color:#fff;font-weight:700}
+.tv-overlay-channels button{display:grid;grid-template-columns:40px 64px minmax(0,1fr);align-items:center;gap:14px;min-height:72px;padding:8px 12px;border:0;border-radius:12px;background:transparent;color:#eee;text-align:left}
+.tv-overlay-channels button.active{background:rgba(255,0,51,.22)}
+.tv-overlay-channels em{color:#888;font-style:normal;font-size:15px;text-align:right}
+.tv-overlay-channels img,.tv-overlay-logo{width:64px;height:48px;object-fit:contain;border-radius:8px;background:#111}
+.tv-overlay-logo{display:grid;place-items:center;color:#aaa;font-weight:800;text-transform:uppercase}
+.tv-overlay-text{min-width:0;display:flex;flex-direction:column;gap:3px}
+.tv-overlay-text strong{font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tv-overlay-text .yt-epg-now{font-size:14px}
+.tv-overlay-empty{color:#aaa;padding:20px}
+.tv-overlay-hint{position:fixed;left:28px;bottom:16px;color:#999;font-size:14px}
+.tv .tv-overlay button:focus{outline:3px solid #fff!important;outline-offset:-3px!important;box-shadow:none!important;background:rgba(255,255,255,.16)}
+
+/* Channel banner at the bottom of the video */
+.tv-banner{position:fixed;left:40px;right:40px;bottom:84px;z-index:250;display:flex;align-items:center;gap:18px;padding:18px 24px;border-radius:16px;background:rgba(10,10,10,.88);color:#fff}
+.tv-banner em{font-style:normal;font-size:34px;font-weight:800;color:#ff4e45;min-width:56px;text-align:center}
+.tv-banner img{width:96px;height:64px;object-fit:contain;border-radius:8px;background:#000}
+.tv-banner div{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.tv-banner strong{font-size:26px}
+.tv-banner span{color:#bbb;font-size:16px}
+.tv-banner .yt-epg-now{font-size:17px;color:#ddd}
+.tv-banner small{flex:0 0 auto;color:#999;font-size:14px;max-width:260px;text-align:right}

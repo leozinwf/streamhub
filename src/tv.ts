@@ -18,7 +18,7 @@ export const isAndroidApp = typeof navigator !== 'undefined' && /StreamHub(TV|An
 
 let lastFocused: HTMLElement | null = null
 // Primeiro foco quando nada está selecionado: o conteúdo (cartões), não o menu.
-const PREFERRED = '.yt-thumb, .channel-card, .media-card, .episode-list button, .shp-btn'
+const PREFERRED = '.tv-overlay-channels .active, .tv-overlay-channels button, .md-play, .yt-thumb, .channel-card, .media-card, .md-episode, .shp-btn'
 
 function isTextField(element: Element | null): element is HTMLInputElement | HTMLTextAreaElement {
   if (!element) return false
@@ -131,7 +131,18 @@ function activeVideo() {
   return videos.find((video) => !video.paused) ?? videos[0] ?? null
 }
 
+type Hooks = { __streamhubWatchKey?: (event: KeyboardEvent) => boolean; __streamhubWatchBack?: () => boolean }
+const hooks = () => window as unknown as Hooks
+
 function onKeyDown(event: KeyboardEvent) {
+  // Watching full screen with the channel menu closed: the app handles the keys
+  // (↑ ↓ change channel, OK opens the menu, ← → seek in movies).
+  const root = document.documentElement.classList
+  if (root.contains('tv-watching') && !root.contains('tv-menu-open') && hooks().__streamhubWatchKey?.(event)) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return
+  }
   const direction = ARROWS[event.key]
   const active = document.activeElement
   if (direction) {
@@ -169,6 +180,8 @@ function onKeyDown(event: KeyboardEvent) {
 
 /** Botão "voltar" do controle. Devolve true se tratou; false deixa o app perguntar se quer sair. */
 function back(): boolean {
+  // Full-screen watching: closes the channel menu, then leaves full screen.
+  if (hooks().__streamhubWatchBack?.()) return true
   if (document.fullscreenElement) { void document.exitFullscreen().catch(() => undefined); return true }
   const active = document.activeElement as HTMLElement | null
   if (isTextField(active)) { active.blur(); return true }
