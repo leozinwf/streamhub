@@ -8,7 +8,7 @@ Os dois guardam a sua lista e as suas preferências no mesmo lugar, então dá p
 
 ### Android e Fire TV
 - **StreamHub-Android.apk**: celular ou tablet Android. Abra o arquivo baixado e permita a instalação de "fontes desconhecidas" quando o Android pedir.
-- **StreamHub-FireTV.apk**: Fire TV Stick e Android TV. No app **Downloader**, digite `github.com/leozinwf/streamhub/releases/latest/download/StreamHub-FireTV.apk`.
+- **StreamHub-FireTV.apk**: Fire TV Stick e Android TV. No app **Downloader** (aba Home), digite o endereço curto **com https**: `https://github.com/leozinwf/streamhub/releases/download/tv/tv.apk`. Sem o `https://`, o Downloader usa http, que muitas redes bloqueiam (erro de tempo esgotado).
 
 É o mesmo app nos dois: na TV ele usa a navegação pelo controle remoto; no celular, o toque. Os arquivos aparecem nesta página alguns minutos depois da publicação.
 

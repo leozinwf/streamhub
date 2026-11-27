@@ -75,11 +75,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Link curto para baixar no Fire TV pelo app Downloader:
-          # github.com/leozinwf/streamhub/releases/download/tv/tv.apk
+          # https://github.com/leozinwf/streamhub/releases/download/tv/tv.apk (com https: muitas redes bloqueiam http)
           cp android/app/build/outputs/apk/release/StreamHub-FireTV-*.apk "$RUNNER_TEMP/tv.apk"
           if ! gh release view tv >/dev/null 2>&1; then
             gh release create tv --prerelease --target "$GITHUB_SHA" --title "APK (link curto)" \
-              --notes "APK de teste do StreamHub para Fire TV / Android TV. No app Downloader do Fire TV, digite: github.com/leozinwf/streamhub/releases/download/tv/tv.apk"
+              --notes "APK mais recente do StreamHub (celular, Fire TV e Android TV). No app Downloader, digite com https: https://github.com/leozinwf/streamhub/releases/download/tv/tv.apk"
           fi
           gh release upload tv "$RUNNER_TEMP/tv.apk" --clobber
 
