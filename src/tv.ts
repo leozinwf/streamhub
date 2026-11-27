@@ -18,7 +18,7 @@ export const isAndroidApp = typeof navigator !== 'undefined' && /StreamHub(TV|An
 
 let lastFocused: HTMLElement | null = null
 // Primeiro foco quando nada está selecionado: o conteúdo (cartões), não o menu.
-const PREFERRED = '.tv-overlay-channels .active, .tv-overlay-channels button, .md-play, .yt-thumb, .channel-card, .media-card, .md-episode, .shp-btn'
+const PREFERRED = '.tv-autofocus, .tv-list, .md-play, .yt-thumb, .channel-card, .media-card, .md-episode, .shp-btn'
 
 function isTextField(element: Element | null): element is HTMLInputElement | HTMLTextAreaElement {
   if (!element) return false
@@ -139,6 +139,14 @@ function onKeyDown(event: KeyboardEvent) {
   // (↑ ↓ change channel, OK opens the menu, ← → seek in movies).
   const root = document.documentElement.classList
   if (root.contains('tv-watching') && !root.contains('tv-menu-open') && hooks().__streamhubWatchKey?.(event)) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return
+  }
+  // Lists/grids of the TV interface move their own selection (only the visible rows exist in
+  // the page); they return false at an edge so the focus can leave to the next column.
+  const own = (document.activeElement as (HTMLElement & { __tvKey?: (event: KeyboardEvent) => boolean }) | null)?.__tvKey
+  if (own && own(event)) {
     event.preventDefault()
     event.stopImmediatePropagation()
     return

@@ -19,13 +19,18 @@ import { scrollToSection } from './lib/scroll'
 import PlaylistSettings from './components/PlaylistSettings'
 import ImportScreen from './components/ImportScreen'
 import EpgGuide, { EpgConnectionContext } from './components/EpgGuide'
-import { TvChannelOverlay, TvInfoBanner } from './components/TvOverlay'
+import { TvInfoBanner } from './components/TvOverlay'
+import TvApp, { TvLiveBrowser, useTvLiveCatalog } from './components/tv/TvApp'
+import { TvControls } from './components/tv/TvControls'
 import { isTv } from './tv'
 import MediaDetails from './components/MediaDetails'
 import { groupLabel } from './lib/groupLabel'
 import { recommendChannels } from './lib/recommend'
 import { collapseChannelVariants, compareChannelNames, normalizeChannelKey } from './lib/channelVariants'
 import { categorizeChannel, categorizeChannels, compareCategories, isForeignGroup } from './lib/categorize'
+
+const EMPTY_CHANNELS: Channel[] = []
+const TV_FIT_LABELS = { contain: 'original', cover: 'preencher', fill: 'esticar' } as const
 
 const RECENT_STORAGE_KEY = 'streamhub-recent-channels'
 const FAVORITES_STORAGE_KEY = 'streamhub-favorite-channels'
@@ -72,9 +77,13 @@ export default function App() {
   /** Fire TV: channel menu open over the video. */
   const [tvOverlay, setTvOverlay] = useState(false)
   const tvKeyRef = useRef<(event: KeyboardEvent) => boolean>(() => false)
+  /** Fire TV: control bar over the video (opened with OK). */
+  const [tvControls, setTvControls] = useState(false)
+  /** Fire TV: channel order used for ↑ ↓ and the numbers (the list the channel was picked from). */
+  const [tvZapList, setTvZapList] = useState<Channel[]>([])
+  const [tvFit, setTvFit] = usePreference('streamhub-tv-fit', 'contain', ['contain', 'cover', 'fill'] as const)
+  const tvAppBackRef = useRef<() => boolean>(() => false)
   const tvBackRef = useRef<() => boolean>(() => false)
-  /** Bumped to show the channel banner again (→ on the remote, seeking). */
-  const [tvBanner, setTvBanner] = useState(0)
   useEffect(() => {
     if (!isTv) return
     const w = window as unknown as Record<string, unknown>
@@ -200,7 +209,6 @@ export default function App() {
             if (restored) {
               setSelectedChannel(restored)
               setContentMode('live')
-              if (isTv) setTvWatching(true)
             }
           }
         } catch { /* Ignore invalid or unavailable saved preferences. */ }
@@ -239,6 +247,7 @@ export default function App() {
   }, [ready, playlist, selectedChannel])
 
 
+  const tvCatalog = useTvLiveCatalog(isTv ? playlist?.channels || EMPTY_CHANNELS : EMPTY_CHANNELS, favoriteChannels, recentChannels)
   const xtreamConnection = useMemo(() => playlist?.xtream || inferXtreamConnection(playlist?.channels || []), [playlist?.xtream, playlist?.channels])
   const favoriteKeys = useMemo(() => new Set(favoriteChannels.map(canonicalChannelKey)), [favoriteChannels])
   const favoritePlaylistChannels = useMemo(() => playlist?.channels.filter((channel) => favoriteKeys.has(canonicalChannelKey(channel))) ?? [], [playlist, favoriteKeys])
@@ -320,7 +329,7 @@ export default function App() {
     let target: Channel | undefined
     if (step === 'back') target = previousChannelRef.current || undefined
     else {
-      const list = contentMode === 'adult' ? adultChannelList : tvChannelList
+      const list = isTv && tvZapList.length ? tvZapList : contentMode === 'adult' ? adultChannelList : tvChannelList
       if (!list.length) return
       const index = selectedChannel ? list.findIndex((channel) => channel.id === selectedChannel.id || channel.url === selectedChannel.url || channel.variants?.some((variant) => variant.id === selectedChannel.id)) : -1
       target = list[(index + step + list.length) % list.length]
@@ -334,9 +343,11 @@ export default function App() {
   useEffect(() => {
     const root = document.documentElement.classList
     root.toggle('tv-watching', tvFullscreen)
-    root.toggle('tv-menu-open', tvFullscreen && tvOverlay)
-    if (!tvFullscreen && tvOverlay) setTvOverlay(false)
-  }, [tvFullscreen, tvOverlay])
+    root.toggle('tv-menu-open', tvFullscreen && (tvOverlay || tvControls))
+    root.toggle('tv-fit-cover', tvFit === 'cover')
+    root.toggle('tv-fit-fill', tvFit === 'fill')
+    if (!tvFullscreen && (tvOverlay || tvControls)) { setTvOverlay(false); setTvControls(false) }
+  }, [tvFullscreen, tvOverlay, tvControls, tvFit])
   // Channel order for zapping and the Fire TV menu: the list on screen, but never the
   // "Recomendados" list (which doesn't contain the channel being watched).
   const tvChannelList = useMemo(() => !showingRecommendations && channels.length ? channels : collapseChannelVariants(regularPlaylistChannels).sort(compareChannelNames), [showingRecommendations, channels, regularPlaylistChannels])
@@ -346,26 +357,23 @@ export default function App() {
     const live = !selectedChannel?.kind || selectedChannel.kind === 'live'
     const key = event.key
     if (key === 'ArrowUp' || key === 'ArrowDown' || key === 'ChannelUp' || key === 'ChannelDown' || key === 'PageUp' || key === 'PageDown') {
-      if (!live) return false
+      if (!live) { setTvControls(true); return true }
       zapRef.current(key === 'ArrowUp' || key === 'ChannelUp' || key === 'PageUp' ? -1 : 1)
       return true
     }
-    if (key === 'Enter' || key === ' ' || key === 'ContextMenu') {
-      if (live) setTvOverlay(true)
-      else if (video) { if (video.paused) void video.play().catch(() => undefined); else video.pause() }
-      return true
-    }
+    if (key === 'Enter' || key === ' ' || key === 'ContextMenu') { setTvControls(true); return true }
     if (key === 'ArrowLeft' || key === 'ArrowRight') {
-      if (live) { if (key === 'ArrowLeft') setTvOverlay(true); else setTvBanner((value) => value + 1); return true }
+      if (live) { if (key === 'ArrowLeft') setTvOverlay(true); else setTvControls(true); return true }
       if (video) video.currentTime = Math.max(0, video.currentTime + (key === 'ArrowLeft' ? -10 : 10))
-      setTvBanner((value) => value + 1)
+      setTvControls(true)
       return true
     }
     return false
   }
   tvBackRef.current = () => {
-    if (!tvWatching) return false
+    if (!tvWatching) return tvAppBackRef.current()
     if (tvOverlay) { setTvOverlay(false); return true }
+    if (tvControls) { setTvControls(false); return true }
     setTvWatching(false)
     return true
   }
@@ -539,6 +547,28 @@ export default function App() {
   if (!ready) return <div className="loading-screen">Carregando StreamHub...</div>
   if (!playlist) return <ImportScreen onImportFile={(file) => void importFile(file)} onImportText={importContent} onConnected={async (next) => { await savePlaylist(next); setPlaylist(next); setSelectedGroup('Todos'); setContentMode('home') }} />
 
+  // Fire TV: its own interface (main menu, provider categories, full-screen video).
+  if (isTv) {
+    const live = !selectedChannel?.kind || selectedChannel.kind === 'live'
+    const tvNumber = selectedChannel && live ? tvZapList.findIndex((channel) => channel.id === selectedChannel.id || channel.url === selectedChannel.url) + 1 || undefined : undefined
+    const playLive = (channel: Channel, list: Channel[]) => { setTvZapList(list); setTvControls(false); setTvOverlay(false); setSelectedChannel(channel); addRecent(channel); setTvWatching(true) }
+    return <EpgConnectionContext.Provider value={xtreamConnection}>
+      <TvApp playlistName={playlist.name} channels={playlist.channels} media={playlist.media || []} favorites={favoriteChannels} recents={recentChannels} connection={xtreamConnection} current={selectedChannel} watching={tvFullscreen}
+        onPlayChannel={playLive}
+        onPlayMedia={(channel, queue) => { setEpisodeQueue(queue || []); setTvControls(false); setSelectedChannel(channel); setTvWatching(true) }}
+        onSettings={() => setSettingsOpen(true)} backRef={tvAppBackRef} />
+      {tvFullscreen && selectedChannel && <div className="player-screen tv-player"><ModernPlayer channel={selectedChannel} onEnded={playNextEpisode} onToggleFullscreen={() => setTvWatching(false)} /></div>}
+      {tvFullscreen && selectedChannel && !tvControls && !tvOverlay && <TvInfoBanner key={selectedChannel.id} channel={selectedChannel} number={tvNumber} hint={live ? '↑ ↓ trocar canal · OK opções · ← lista de canais' : 'OK opções · ← → 10 s'} />}
+      {tvFullscreen && selectedChannel && tvControls && !tvOverlay && <TvControls channel={selectedChannel} number={tvNumber} fitLabel={TV_FIT_LABELS[tvFit]}
+        onPrevious={() => zapRef.current(-1)} onNext={() => zapRef.current(1)} onList={() => { setTvControls(false); setTvOverlay(true) }}
+        onFit={() => setTvFit(tvFit === 'contain' ? 'cover' : tvFit === 'cover' ? 'fill' : 'contain')} onExit={() => setTvWatching(false)} />}
+      {tvFullscreen && tvOverlay && <div className="tv-overlay" role="dialog" aria-modal="true" aria-label="Lista de canais">
+        <TvLiveBrowser overlay categories={tvCatalog.categories} channelsOf={tvCatalog.channelsOf} current={selectedChannel} initialCategory={selectedChannel ? tvCatalog.categoryOf(selectedChannel) : undefined} onPlay={playLive} />
+      </div>}
+      {settingsOpen && <PlaylistSettings playlist={playlist} categoryCount={tvCatalog.categories.length} showPassword={showAccessPassword} onTogglePassword={() => setShowAccessPassword((value) => !value)} onClose={() => setSettingsOpen(false)} onExport={exportM3u} />}
+    </EpgConnectionContext.Provider>
+  }
+
   if (contentMode === 'home') return <>
     <HomeFeed
       channels={homeChannels}
@@ -620,13 +650,6 @@ export default function App() {
         {selectedSeries ? <MediaDetails item={selectedSeries} connection={xtreamConnection} backLabel={contentMode === 'adult' ? 'Voltar à área +18' : contentMode === 'movie' ? 'Voltar aos filmes' : 'Voltar às séries'} onBack={() => setSelectedSeries(null)} onPlay={playFromDetails} /> : <MediaLibrary kind={contentMode === 'movie' ? 'movie' : 'series'} items={mediaItems} query={query} genre={selectedMediaCategory} onGenreChange={(genre) => { setSelectedMediaCategory(genre); scrollToSection('.media-library') }} onOpen={(item) => item.kind === 'movie' ? playMovie(item) : void openSeries(item)} />}
       </section>}
     {zapToast && <div className="zap-toast" role="status">{zapToast}</div>}
-    {tvFullscreen && selectedChannel && !tvOverlay && <TvInfoBanner key={`${selectedChannel.id}-${tvBanner}`} channel={selectedChannel} number={(!selectedChannel.kind || selectedChannel.kind === 'live') ? tvChannelList.findIndex((channel) => channel.id === selectedChannel.id || channel.url === selectedChannel.url) + 1 || undefined : undefined} hint={(!selectedChannel.kind || selectedChannel.kind === 'live') ? '↑ ↓ trocar canal · OK lista de canais · Voltar sair' : 'OK pausa · ← → 10 s · Voltar sair'} />}
-    {tvFullscreen && tvOverlay && <TvChannelOverlay channels={tvChannelList} selectedGroup={showingRecommendations ? 'Todos' : selectedGroup} current={selectedChannel} onGroup={(group) => { setSelectedGroup(group); setSelectedSubgroup('Todos') }} onPick={(channel) => { selectChannel(channel); setTvOverlay(false) }} groups={[
-      { id: 'Todos', label: 'Todos os canais' },
-      ...(favoriteChannels.length ? [{ id: 'Favoritos', label: 'Favoritos', count: favoriteChannels.length }] : []),
-      ...(recentChannels.length ? [{ id: 'Recentes', label: 'Vistos recentemente', count: recentChannels.length }] : []),
-      ...groups.map((group) => ({ id: group, label: groupLabel(group), count: groupCounts.get(group) || 0 })),
-    ]} />}
     {listReturn !== null && <button className="list-return" onClick={() => { const top = listReturn; setListReturn(null); window.scrollTo({ top, behavior: 'smooth' }) }}><ArrowDown size={16} /> Voltar à lista</button>}
     </main><aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
       <div className="yt-side-main">
